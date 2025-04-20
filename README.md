@@ -11,6 +11,8 @@ Ark Web Wallet is a full-stack web application that allows users to:
 
 The application consists of a Rust backend API and a React frontend, providing a seamless user experience for managing Bitcoin with Ark protocol integration.
 
+![backend-server](./assets/backend.png)
+
 ## Features
 - Wallet Management: Create and access Bitcoin wallets
 - On-chain Transactions: Send and receive regular Bitcoin transactions
