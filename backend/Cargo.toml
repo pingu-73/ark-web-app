@@ -2,6 +2,10 @@
 name = "ark-web-backend"
 version = "0.1.0"
 edition = "2021"
+description = "Backend for demonstrating Ark protocol"
+authors = ["Dikshant <dikshant.073@gmail.com>"]
+readme = "README.md"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 # Ark dependencies
