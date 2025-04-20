@@ -81,10 +81,6 @@ The backend is structured as follows:
 - `src/api/`: API routes and handlers
 - `src/services/`: Business logic
 - `src/models/`: Data models
-To run the backend in development mode with auto-reload:
-```
-cargo watch -x run
-```
 
 ### Frontend Development
 The frontend is structured as follows:
