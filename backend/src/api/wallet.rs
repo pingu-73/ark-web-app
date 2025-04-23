@@ -92,3 +92,15 @@ pub async fn check_deposits() -> impl IntoResponse {
         }
     }
 }
+
+pub async fn receive_vtxo(Json(request): Json<crate::models::wallet::ReceiveRequest>) -> impl IntoResponse {
+    match wallet::receive_vtxo(request.from_address, request.amount).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            tracing::error!("Error receiving VTXO: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}

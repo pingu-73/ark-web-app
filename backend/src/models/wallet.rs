@@ -42,3 +42,14 @@ pub struct SendRequest {
 pub struct SendResponse {
     pub txid: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct ReceiveRequest {
+    pub from_address: String,
+    pub amount: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExitRequest {
+    pub vtxo_txid: String,
+}

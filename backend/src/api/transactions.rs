@@ -43,3 +43,15 @@ pub async fn participate_in_round() -> impl IntoResponse {
         }
     }
 }
+
+pub async fn unilateral_exit(Json(request): Json<crate::models::wallet::ExitRequest>) -> impl IntoResponse {
+    match transactions::unilateral_exit(request.vtxo_txid).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            tracing::error!("Error performing unilateral exit: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}

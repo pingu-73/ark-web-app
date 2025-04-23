@@ -150,13 +150,13 @@ pub async fn check_deposits() -> Result<serde_json::Value> {
 }
 
 pub async fn send_vtxo(address: String, amount: u64) -> Result<SendResponse> {
-    // calculate available balance (confirmed minus pending outgoing)
+    // Calculate available balance (confirmed minus pending outgoing)
     let transactions = APP_STATE.transactions.lock().await;
     
     let mut available_balance = 0;
     let mut confirmed_balance = 0;
     
-    // calculate confirmed balance
+    // First, calculate confirmed balance
     for tx in transactions.iter() {
         if tx.is_settled == Some(true) {
             if tx.amount > 0 {
@@ -167,7 +167,7 @@ pub async fn send_vtxo(address: String, amount: u64) -> Result<SendResponse> {
         }
     }
     
-    // subtract pending outgoing tx
+    // Then, subtract pending outgoing transactions
     let mut pending_outgoing = 0;
     for tx in transactions.iter() {
         if tx.is_settled == Some(false) && tx.amount < 0 {
@@ -180,7 +180,6 @@ pub async fn send_vtxo(address: String, amount: u64) -> Result<SendResponse> {
     // release tx lock
     drop(transactions);
     
-    // Check if there's enough available balance
     if available_balance < amount {
         return Err(anyhow::anyhow!(
             "Insufficient balance: have {} available (confirmed: {}, pending outgoing: {}), need {}",
@@ -188,20 +187,19 @@ pub async fn send_vtxo(address: String, amount: u64) -> Result<SendResponse> {
         ));
     }
     
-    // for demonstration return a dummy response
-    let txid = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string();
+    // unique tx ID based on timestamp and nonce
+    let txid = format!("tx_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
     
     // add tx to history
     let mut transactions = APP_STATE.transactions.lock().await;
     transactions.push(crate::models::wallet::TransactionResponse {
         txid: txid.clone(),
-        amount: -(amount as i64),  // Negative amount for outgoing transaction
+        amount: -(amount as i64),  // -ve amount for outgoing transaction
         timestamp: chrono::Utc::now().timestamp(),
         type_name: "Send".to_string(),
-        is_settled: Some(false),  // Mark as pending initially
+        is_settled: Some(false),  // initially pending
     });
     
-    // release tx lock
     drop(transactions);
     
     // recalculate balance for consistency
@@ -212,4 +210,28 @@ pub async fn send_vtxo(address: String, amount: u64) -> Result<SendResponse> {
     };
     
     Ok(response)
+}
+
+pub async fn receive_vtxo(from_address: String, amount: u64) -> Result<TransactionResponse> {
+    // unique tx ID
+    let txid = format!("rx_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
+    
+    // add tx to the history
+    let mut transactions = APP_STATE.transactions.lock().await;
+    let tx = TransactionResponse {
+        txid: txid.clone(),
+        amount: amount as i64, // +ve amount for incoming transaction
+        timestamp: chrono::Utc::now().timestamp(),
+        type_name: "Receive".to_string(),
+        is_settled: Some(false), // initially pending
+    };
+    transactions.push(tx.clone());
+    
+    // release tx lock
+    drop(transactions);
+    
+    // recalculate balance for consistency
+    APP_STATE.recalculate_balance().await?;
+    
+    Ok(tx)
 }
