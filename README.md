@@ -102,7 +102,7 @@ The backend provides the following API endpoints:
 - `POST /api/round/participate`: Participate in a round
 
 
-# Reamining Tasks
+# Reamining Work
 1. **Commit Reveal protocol**
 - Add models for commit and reveal transactions
 - Create API endpoints for the game flow
@@ -118,3 +118,22 @@ The backend provides the following API endpoints:
 - verification of commitments and reveals
 
 4. **Crate with Core functionality for other developers to use**
+
+5. **Features**
+- VTXO Tree Implementation
+- Connector Mechanism (to ensure atomicity b/w forfeit txs and round txs)
+- Timelock Handling (for boarding outputs and unilateral exits)
+- Batch Expiry (track and handle batch expiry for liquidity recycling)
+
+6. **Dummy to real impl**
+- make actual gRPC calls to the Ark server for balances, addresses, and tx history
+- add signing and verification steps in Round participation
+
+7. **Security Fatures (Improvement from current impl)**
+- tx Broadcasting (currently not broadcasting txs to network)
+- bitcoin blockchain interaction for on-chain tx
+- UTXO management
+- Key Management
+- Signature Verification
+- Add cryptographic op for protocol's security
+- Implement taproot script with collaborative and exit paths
