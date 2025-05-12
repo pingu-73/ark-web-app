@@ -100,3 +100,21 @@ The backend provides the following API endpoints:
 - `POST /api/wallet/send`: Send a payment (either Ark or on-chain)
 - `GET /api/transactions`: Get transaction history
 - `POST /api/round/participate`: Participate in a round
+
+
+# Reamining Tasks
+1. **Commit Reveal protocol**
+- Add models for commit and reveal transactions
+- Create API endpoints for the game flow
+- Implement service functions for game logic
+
+2. **Game State Management**
+- Track game states (waiting for commit, waiting for reveal, completed)
+- Handle timeouts and disputes
+- Manage game history
+
+3. **Features**
+- proper random number generation
+- verification of commitments and reveals
+
+4. **Crate with Core functionality for other developers to use**
