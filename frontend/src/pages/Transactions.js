@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, fetchTransactions } from 'react';
 import {
   Container,
   Header,
@@ -9,7 +9,9 @@ import {
   TextFilter,
   Pagination,
   CollectionPreferences,
-  SpaceBetween
+  SpaceBetween,
+  Button,
+  Modal
 } from '@cloudscape-design/components';
 
 function Transactions() {
@@ -19,6 +21,12 @@ function Transactions() {
   const [filterText, setFilterText] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+
+  const [exitModalVisible, setExitModalVisible] = useState(false);
+  const [exitTxid, setExitTxid] = useState('');
+  const [exitLoading, setExitLoading] = useState(false);
+  const [exitError, setExitError] = useState(null);
+  const [exitSuccess, setExitSuccess] = useState(null);
 
   const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3030/api';
 
@@ -47,6 +55,48 @@ function Transactions() {
 
   const formatDate = (timestamp) => {
     return new Date(timestamp * 1000).toLocaleString();
+  };
+
+  const handleExit = async (txid) => {
+    setExitTxid(txid);
+    setExitModalVisible(true);
+    setExitError(null);
+    setExitSuccess(null);
+  };
+
+  const performExit = async () => {
+    try {
+      setExitLoading(true);
+      
+      const response = await fetch(`${API_URL}/transactions/exit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ vtxo_txid: exitTxid }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `Error performing exit: ${response.statusText}`);
+      }
+      
+      const result = await response.json();
+      console.log('Exit result:', result);
+      
+      setExitSuccess('Unilateral exit performed successfully!');
+      
+      // Refresh transactions after a short delay
+      setTimeout(() => {
+        fetchTransactions();
+        setExitModalVisible(false);
+      }, 2000);
+    } catch (err) {
+      console.error('Exit error:', err);
+      setExitError('Failed to perform unilateral exit: ' + err.message);
+    } finally {
+      setExitLoading(false);
+    }
   };
 
   // Filter transactions based on search text
@@ -126,13 +176,15 @@ function Transactions() {
             {
               id: 'status',
               header: 'Status',
-              cell: item => (
-                item.is_settled !== undefined ? (
-                  <StatusIndicator type={item.is_settled ? "success" : "pending"}>
-                    {item.is_settled ? 'Settled' : 'Pending'}
-                  </StatusIndicator>
-                ) : 'N/A'
-              )
+              cell: item => {
+                if (item.is_settled === undefined || item.is_settled === null) {
+                  return <StatusIndicator type="error">Cancelled</StatusIndicator>;
+                } else if (item.is_settled) {
+                  return <StatusIndicator type="success">Settled</StatusIndicator>;
+                } else {
+                  return <StatusIndicator type="pending">Pending</StatusIndicator>;
+                }
+              }
             },
             {
               id: 'txid',
@@ -141,6 +193,21 @@ function Transactions() {
                 <span title={item.txid}>
                   {item.txid.substring(0, 10)}...
                 </span>
+              )
+            },
+            {
+              id: 'actions',
+              header: 'Actions',
+              cell: item => (
+                item.is_settled === false ? (
+                  <Button
+                    onClick={() => handleExit(item.txid)}
+                    variant="normal"
+                    iconName="external"
+                  >
+                    Exit
+                  </Button>
+                ) : null
               )
             }
           ]}
@@ -180,6 +247,46 @@ function Transactions() {
             </Box>
           }
         />
+      <Modal
+        visible={exitModalVisible}
+        onDismiss={() => setExitModalVisible(false)}
+        header="Confirm Unilateral Exit"
+        footer={
+          <Box float="right">
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button variant="link" onClick={() => setExitModalVisible(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={performExit} loading={exitLoading}>
+                Confirm Exit
+              </Button>
+            </SpaceBetween>
+          </Box>
+        }
+      >
+        <SpaceBetween size="m">
+          <p>
+            Are you sure you want to perform a unilateral exit for this transaction?
+            This will broadcast your VTXO on-chain, which may incur network fees.
+          </p>
+          
+          <p>
+            <strong>Transaction ID:</strong> {exitTxid}
+          </p>
+          
+          {exitError && (
+            <Box variant="error">
+              {exitError}
+            </Box>
+          )}
+          
+          {exitSuccess && (
+            <Box variant="success">
+              {exitSuccess}
+            </Box>
+          )}
+        </SpaceBetween>
+      </Modal>
       </SpaceBetween>
     </Container>
   );

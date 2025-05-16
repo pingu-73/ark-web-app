@@ -49,6 +49,7 @@ async fn main() {
         .route("/api/wallet/send", post(api::wallet::send_vtxo))
         .route("/api/wallet/available-balance", get(api::wallet::get_available_balance))
         .route("/api/wallet/check-deposits", post(api::wallet::check_deposits))
+        .route("/api/wallet/receive", post(api::wallet::receive_vtxo))
         
         // tx routes
         .route("/api/transactions", get(api::transactions::get_history))
@@ -56,6 +57,9 @@ async fn main() {
         
         // round participation
         .route("/api/round/participate", post(api::transactions::participate_in_round))
+
+        // unilateral exit
+        .route("/api/transactions/exit", post(api::transactions::unilateral_exit))
         
         // add middleware
         .layer(TraceLayer::new_for_http())

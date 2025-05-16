@@ -5,6 +5,7 @@ import { Container, Header, SpaceBetween } from '@cloudscape-design/components';
 // Import pages
 import Dashboard from './pages/Dashboard';
 import Send from './pages/Send';
+import Receive from './pages/Receive';
 import Transactions from './pages/Transactions';
 
 function App() {
@@ -17,12 +18,14 @@ function App() {
           <div style={{ display: 'flex', gap: '20px', marginBottom: '20px' }}>
             <Link to="/">Dashboard</Link>
             <Link to="/send">Send</Link>
+            <Link to="/receive">Receive</Link>
             <Link to="/transactions">Transactions</Link>
           </div>
           
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/send" element={<Send />} />
+            <Route path="/receive" element={<Receive />} />
             <Route path="/transactions" element={<Transactions />} />
           </Routes>
         </SpaceBetween>

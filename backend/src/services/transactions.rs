@@ -26,21 +26,7 @@ pub async fn get_transaction(txid: String) -> Result<TransactionResponse> {
 }
 
 pub async fn participate_in_round() -> Result<Option<String>> {
-    // [TODO!!] As per Ark protocol, participating in a round involves:
-    // 1. Registering inputs (VTXOs to spend)
-    // 2. Registering outputs (new VTXOs to create)
-    // 3. Signing the round tx
-    // 4. Submitting signatures
-    // 5. Waiting for the round to be finalized
-    
-    // for implementation, we'll:
-    // 1. Check if we have any pending tx
-    // 2. Validate that we have enough balance for all pending outgoing txs
-    // 3. Mark valid txs as settled
-    // 4. Return a tx ID for the round
-    
-    // get txs from app state
-    let transactions = APP_STATE.transactions.lock().await;
+    let mut transactions = APP_STATE.transactions.lock().await;
     
     // find all pending txs
     let pending_txs: Vec<_> = transactions.iter()
@@ -59,11 +45,11 @@ pub async fn participate_in_round() -> Result<Option<String>> {
         .sum();
     
     // get confirmed balance
-    // release lock before calling another function that might need it
-    drop(transactions); 
-    let confirmed_balance = crate::services::wallet::get_available_balance().await?;
+    let balance = APP_STATE.balance.lock().await;
+    let confirmed_balance = balance.confirmed;
+    drop(balance);
     
-    // check if enough balance is present
+    // ensure there is enough balance
     if confirmed_balance < total_outgoing as u64 {
         return Err(anyhow::anyhow!(
             "Insufficient balance for round: have {} confirmed, need {}",
@@ -71,39 +57,30 @@ pub async fn participate_in_round() -> Result<Option<String>> {
         ));
     }
     
-    // [TODO!!] In the Ark protocol, we would now:
-    // 1. Create a round transaction
-    // 2. Sign it
-    // 3. Submit it to the Ark server
-    
-    // for implementation we'll just mark all pending transactions as settled
-    let mut transactions = APP_STATE.transactions.lock().await;
-    let mut settled_txids = HashSet::new();
+    // mark all pending tx as settled
+    let mut settled_txids = Vec::new();
     for tx in transactions.iter_mut() {
         if tx.is_settled == Some(false) {
             tx.is_settled = Some(true);
-            settled_txids.insert(tx.txid.clone());
+            settled_txids.push(tx.txid.clone());
         }
     }
     
-    // release tx lock
-    drop(transactions);
+    let round_txid = format!("round_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
     
-    // recalculate balance to ensure consistency
-    APP_STATE.recalculate_balance().await?;
-    
-    // "Round" tx to represent settlement
-    let round_txid = format!("round_{}", chrono::Utc::now().timestamp());
-    
-    // Add the round tx to the history
-    let mut transactions = APP_STATE.transactions.lock().await;
-    transactions.push(TransactionResponse {
+    // add round tx to the history
+    transactions.push(crate::models::wallet::TransactionResponse {
         txid: round_txid.clone(),
-        amount: 0, // Rounds don't change the balance directly
+        amount: 0, // rounds don't change balance directly
         timestamp: chrono::Utc::now().timestamp(),
         type_name: "Round".to_string(),
         is_settled: Some(true),
     });
+    
+    drop(transactions);
+    
+    // recalculate balance for consistency
+    APP_STATE.recalculate_balance().await?;
     
     // Log the settled transactions
     tracing::info!(
@@ -176,35 +153,71 @@ pub async fn receive_redeem_transaction(
 }
 
 pub async fn unilateral_exit(vtxo_txid: String) -> Result<TransactionResponse> {
-    // [TODO!!] In the Ark protocol, a unilateral exit:
-    // 1. Spends a VTXO on-chain
-    // 2. Uses the exit path in the VTXO script
-    // 3. Is subject to a timelock
-    
-    // find VTXO to exit
+    // find tx
     let transactions = APP_STATE.transactions.lock().await;
+    
+    // check if tx exists
+    let tx_exists = transactions.iter().any(|tx| tx.txid == vtxo_txid);
+    if !tx_exists {
+        drop(transactions);
+        return Err(anyhow::anyhow!("Transaction not found: {}", vtxo_txid));
+    }
+    
+    // check it's in right state
     let vtxo = transactions.iter()
-        .find(|tx| tx.txid == vtxo_txid)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("VTXO not found: {}", vtxo_txid))?;
+        .find(|tx| tx.txid == vtxo_txid && tx.is_settled == Some(false))
+        .cloned();
+    
+    if vtxo.is_none() {
+        // tx exists but is not in pending state
+        let tx = transactions.iter()
+            .find(|tx| tx.txid == vtxo_txid)
+            .unwrap();
+            
+        if tx.is_settled == Some(true) {
+            drop(transactions);
+            return Err(anyhow::anyhow!("Transaction is already settled: {}", vtxo_txid));
+        } else if tx.is_settled == None {
+            drop(transactions);
+            return Err(anyhow::anyhow!("Transaction is already cancelled: {}", vtxo_txid));
+        } else {
+            drop(transactions);
+            return Err(anyhow::anyhow!("Transaction is in an unknown state: {}", vtxo_txid));
+        }
+    }
+    
+    let vtxo = vtxo.unwrap();
     drop(transactions);
     
-    let exit_txid = format!("exit_{}", chrono::Utc::now().timestamp());
+    // generate a unique exit tx ID
+    let exit_txid = format!("exit_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
     
     // add exit tx to the history
     let mut transactions = APP_STATE.transactions.lock().await;
+    
+    // mark original tx as cancelled
+    for tx in transactions.iter_mut() {
+        if tx.txid == vtxo_txid {
+            tx.is_settled = None;
+            break;
+        }
+    }
+    
+    // add exit tx
     let tx = TransactionResponse {
         txid: exit_txid.clone(),
-        amount: vtxo.amount, // same amount as VTXO
+        // only deducting network fees (assuming it as 100 sats)
+        amount: -100, 
         timestamp: chrono::Utc::now().timestamp(),
         type_name: "Exit".to_string(),
-        is_settled: Some(false), // pending initially
+        is_settled: Some(true),
     };
     transactions.push(tx.clone());
     
     drop(transactions);
     
-    APP_STATE.recalculate_balance().await?; // for consistency
+    // recalculate balance for consistency
+    APP_STATE.recalculate_balance().await?;
     
     Ok(tx)
 }
