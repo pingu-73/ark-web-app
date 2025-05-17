@@ -9,10 +9,10 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 # Ark dependencies
-ark-client = { git = "https://github.com/ArkLabsHQ/ark-rs", branch = "master" }
-ark-core = { git = "https://github.com/ArkLabsHQ/ark-rs", branch = "master" }
-ark-bdk-wallet = { git = "https://github.com/ArkLabsHQ/ark-rs", branch = "master" }
-ark-grpc = { git = "https://github.com/ArkLabsHQ/ark-rs", branch = "master" }
+ark-client = { git = "https://github.com/ArkLabsHQ/ark-rs", rev = "c754d7adc8552b14d9d14ef871df271196089d8f" }
+ark-core = { git = "https://github.com/ArkLabsHQ/ark-rs", rev = "c754d7adc8552b14d9d14ef871df271196089d8f" }
+ark-bdk-wallet = { git = "https://github.com/ArkLabsHQ/ark-rs", rev = "c754d7adc8552b14d9d14ef871df271196089d8f" }
+ark-grpc = { git = "https://github.com/ArkLabsHQ/ark-rs", rev = "c754d7adc8552b14d9d14ef871df271196089d8f" }
 
 # Web server
 axum = "0.6"

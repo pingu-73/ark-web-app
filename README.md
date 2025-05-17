@@ -57,7 +57,7 @@ cd ark-web-app
 
 2. Start Nigiri with Ark support
 ```
-nigiri start --Ark
+nigiri start --ark
 ```
 
 3. Build and run the backend
