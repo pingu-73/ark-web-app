@@ -163,37 +163,6 @@ impl ArkWallet {
 }
 
 impl ark_client::wallet::BoardingWallet for ArkWallet {
-    // fn new_boarding_output(
-    //     &self,
-    //     server_pk: bitcoin::XOnlyPublicKey,
-    //     exit_delay: bitcoin::Sequence,
-    //     network: Network,
-    // ) -> Result<BoardingOutput, ark_client::Error> {
-    //     tracing::info!("Creating new boarding output");
-        
-    //     let sk = self.keypair.secret_key();
-    //     let (owner_pk, _) = self.keypair.x_only_public_key();
-        
-    //     let boarding_output = match BoardingOutput::new(&self.secp, server_pk, owner_pk, exit_delay, network) {
-    //         Ok(bo) => bo,
-    //         Err(e) => {
-    //             tracing::error!("Error creating boarding output: {}", e);
-    //             return Err(ark_client::Error::wallet(anyhow!("Failed to create boarding output: {}", e)));
-    //         }
-    //     };
-        
-    //     // store secret key for this public key
-    //     let mut secret_keys = self.secret_keys.blocking_lock();
-    //     secret_keys.insert(owner_pk.to_string(), sk);
-        
-    //     // store boarding output
-    //     let mut boarding_outputs = self.boarding_outputs.blocking_lock();
-    //     boarding_outputs.push(boarding_output.clone());
-        
-    //     tracing::info!("Created boarding output with address: {}", boarding_output.address());
-    //     Ok(boarding_output)
-    // }
-
     fn new_boarding_output(
         &self,
         server_pk: bitcoin::XOnlyPublicKey,
