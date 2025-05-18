@@ -286,7 +286,7 @@ impl ArkGrpcService {
                 self.grpc_client = Some(grpc_client);
                 
                 // Now initialize the Ark client
-                match self.init_ark_client(server_url).await {
+                match self.init_ark_client_with_retry(server_url).await {
                     Ok(_) => {
                         tracing::info!("Successfully initialized Ark client");
                     },
@@ -340,18 +340,129 @@ impl ArkGrpcService {
             server_url.to_string(),
         );
         
+        tracing::debug!(
+            "Attempting to connect with: network={:?}, keypair_pubkey={}, server_url={}",
+            network,
+            keypair.public_key(),
+            server_url
+        );
         // connect to Ark server and get server info
         tracing::info!("Connecting to Ark server...");
         match offline_client.connect().await {
             Ok(client) => {
                 tracing::info!("Successfully connected to Ark server");
+                let server_info = client.server_info.clone();
+                tracing::info!(
+                    "Server info: network={:?}, pk={}, exit_delay={}",
+                    server_info.network,
+                    server_info.pk,
+                    server_info.unilateral_exit_delay
+                );
                 let mut ark_client = self.ark_client.lock().await;
                 *ark_client = Some(client);
                 Ok(())
             },
             Err(e) => {
-                tracing::error!("Failed to connect to Ark server: {}", e);
+                tracing::error!("Failed to connect to Ark server: {} (type: {})", e, std::any::type_name_of_val(&e));
                 Err(anyhow::anyhow!("Failed to connect to Ark server: {}", e))
+            }
+        }
+    }
+
+    async fn init_ark_client_with_retry(&mut self, server_url: &str) -> Result<()> {
+        let max_retries = 3;
+        let mut retries = 0;
+        
+        while retries < max_retries {
+            tracing::info!("Attempt {} to initialize Ark client", retries + 1);
+            
+            // create a new gRPC client for each attempt
+            let mut grpc_client = ArkGrpcClient::new(server_url.to_string());
+            
+            // try to connect the gRPC client first
+            match grpc_client.connect().await {
+                Ok(_) => {
+                    tracing::info!("gRPC connection successful");
+                    
+                    // try to get server info directly
+                    match grpc_client.get_info().await {
+                        Ok(info) => {
+                            tracing::info!("Successfully got server info: {:?}", info);
+                            
+                            // try the full client initialization
+                            let network = Network::Regtest;
+                            let esplora_url = std::env::var("ESPLORA_URL")
+                                .unwrap_or_else(|_| "http://localhost:3002".to_string());
+                            
+                            let keypair = self.load_or_create_keypair()?;
+                            let blockchain = Arc::new(EsploraBlockchain::new(&esplora_url)?);
+                            let wallet = Arc::new(ArkWallet::new(keypair.clone(), network));
+                            
+                            let offline_client = OfflineClient::new(
+                                "ark-web-app".to_string(),
+                                keypair,
+                                blockchain,
+                                wallet,
+                                server_url.to_string(),
+                            );
+                            
+                            match offline_client.connect().await {
+                                Ok(client) => {
+                                    tracing::info!("Successfully initialized Ark client");
+                                    let mut ark_client = self.ark_client.lock().await;
+                                    *ark_client = Some(client);
+                                    return Ok(());
+                                },
+                                Err(e) => {
+                                    tracing::error!("Failed to initialize Ark client: {}", e);
+                                    // Continue to retry
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            tracing::error!("Failed to get server info: {}", e);
+                            // Continue to retry
+                        }
+                    }
+                },
+                Err(e) => {
+                    tracing::error!("Failed to connect gRPC client: {}", e);
+                    // Continue to retry
+                }
+            }
+            
+            retries += 1;
+            if retries < max_retries {
+                let delay = std::time::Duration::from_secs(2 * retries as u64);
+                tracing::info!("Retrying in {} seconds...", delay.as_secs());
+                tokio::time::sleep(delay).await;
+            }
+        }
+        
+        Err(anyhow::anyhow!("Failed to initialize Ark client after {} attempts", max_retries))
+    }
+
+    async fn check_server_status(&self, server_url: &str) -> Result<()> {
+        let mut grpc_client = ArkGrpcClient::new(server_url.to_string());
+        
+        match grpc_client.connect().await {
+            Ok(_) => {
+                tracing::info!("gRPC connection successful");
+                
+                match grpc_client.get_info().await {
+                    Ok(info) => {
+                        tracing::info!("Server info: {:?}", info);
+                        Ok(())
+                    },
+                    Err(e) => {
+                        tracing::error!("Failed to get server info: {}", e);
+                        Err(anyhow::anyhow!("Failed to get server info: {}", e))
+                    }
+                }
+            },
+            Err(e) => {
+                tracing::error!("Failed to connect gRPC client: {}", e);
+                Err(anyhow::anyhow!("Failed to connect gRPC client: {}", e))
             }
         }
     }
@@ -454,9 +565,12 @@ impl ArkGrpcService {
                     transactions.push(tx_response);
                 }
             }
+            Ok(())
         }
-        
-        Ok(())
+        else {
+            tracing::warn!("Cannot update app state: Ark client not initialized");
+            Err(anyhow::anyhow!("Ark client not initialized"))
+        }
     }
 
     // get balance from Ark client
@@ -482,13 +596,24 @@ impl ArkGrpcService {
         let client_opt = self.get_ark_client().await?;
         
         if let Some(client) = client_opt.as_ref() {
-            let (address, _) = client
-                .get_offchain_address()
-                .map_err(|e| anyhow!("Failed to get offchain address: {}", e))?;
-            return Ok(address.to_string());
+            // let (address, _) = client
+            //     .get_offchain_address()
+            //     .map_err(|e| anyhow!("Failed to get offchain address: {}", e))?;
+            // return Ok(address.to_string());
+            match client.get_offchain_address() {
+                Ok((address, _)) => {
+                    tracing::info!("Got real offchain address: {}", address);
+                    return Ok(address.to_string());
+                },
+                Err(e) => {
+                    tracing::warn!("Failed to get offchain address: {}", e);
+                    // Fall through to fallback
+                }
+            }
         }
         
         // fallback if client unavailable
+        tracing::warn!("Using fallback dummy address");
         Ok("ark1dummy123456789".to_string())
     }
     

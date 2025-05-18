@@ -6,10 +6,28 @@ use bitcoin::opcodes::all;
 use std::collections::HashSet;
 
 pub async fn get_transaction_history() -> Result<Vec<TransactionResponse>> {
-    // tx from the app state
-    let transactions = APP_STATE.transactions.lock().await.clone();
+    let grpc_client = APP_STATE.grpc_client.lock().await;
     
-    Ok(transactions)
+    match grpc_client.get_transaction_history().await {
+        Ok(history) => {
+            let transactions = history.into_iter().map(|(txid, amount, timestamp, type_name, is_settled)| {
+                TransactionResponse {
+                    txid,
+                    amount,
+                    timestamp,
+                    type_name,
+                    is_settled: Some(is_settled),
+                }
+            }).collect();
+            
+            Ok(transactions)
+        },
+        Err(_) => {
+            // Fallback to app state
+            let transactions = APP_STATE.transactions.lock().await.clone();
+            Ok(transactions)
+        }
+    }
 }
 
 pub async fn get_transaction(txid: String) -> Result<TransactionResponse> {
@@ -26,69 +44,12 @@ pub async fn get_transaction(txid: String) -> Result<TransactionResponse> {
 }
 
 pub async fn participate_in_round() -> Result<Option<String>> {
-    let mut transactions = APP_STATE.transactions.lock().await;
+    let grpc_client = APP_STATE.grpc_client.lock().await;
     
-    // find all pending txs
-    let pending_txs: Vec<_> = transactions.iter()
-        .filter(|tx| tx.is_settled == Some(false))
-        .collect();
-    
-    if pending_txs.is_empty() {
-        // no pending tx to settle
-        return Ok(None);
+    match grpc_client.participate_in_round().await {
+        Ok(txid) => Ok(txid),
+        Err(e) => Err(anyhow::anyhow!("Failed to participate in round: {}", e))
     }
-    
-    // calculate total outgoing amount
-    let total_outgoing: i64 = pending_txs.iter()
-        .filter(|tx| tx.amount < 0)
-        .map(|tx| tx.amount.abs())
-        .sum();
-    
-    // get confirmed balance
-    let balance = APP_STATE.balance.lock().await;
-    let confirmed_balance = balance.confirmed;
-    drop(balance);
-    
-    // ensure there is enough balance
-    if confirmed_balance < total_outgoing as u64 {
-        return Err(anyhow::anyhow!(
-            "Insufficient balance for round: have {} confirmed, need {}",
-            confirmed_balance, total_outgoing
-        ));
-    }
-    
-    // mark all pending tx as settled
-    let mut settled_txids = Vec::new();
-    for tx in transactions.iter_mut() {
-        if tx.is_settled == Some(false) {
-            tx.is_settled = Some(true);
-            settled_txids.push(tx.txid.clone());
-        }
-    }
-    
-    let round_txid = format!("round_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
-    
-    // add round tx to the history
-    transactions.push(crate::models::wallet::TransactionResponse {
-        txid: round_txid.clone(),
-        amount: 0, // rounds don't change balance directly
-        timestamp: chrono::Utc::now().timestamp(),
-        type_name: "Round".to_string(),
-        is_settled: Some(true),
-    });
-    
-    drop(transactions);
-    
-    // recalculate balance for consistency
-    APP_STATE.recalculate_balance().await?;
-    
-    // Log the settled transactions
-    tracing::info!(
-        "Round {} settled {} transactions: {:?}",
-        round_txid, settled_txids.len(), settled_txids
-    );
-    
-    Ok(Some(round_txid))
 }
 
 pub async fn create_redeem_transaction(
@@ -153,71 +114,10 @@ pub async fn receive_redeem_transaction(
 }
 
 pub async fn unilateral_exit(vtxo_txid: String) -> Result<TransactionResponse> {
-    // find tx
-    let transactions = APP_STATE.transactions.lock().await;
+    let grpc_client = APP_STATE.grpc_client.lock().await;
     
-    // check if tx exists
-    let tx_exists = transactions.iter().any(|tx| tx.txid == vtxo_txid);
-    if !tx_exists {
-        drop(transactions);
-        return Err(anyhow::anyhow!("Transaction not found: {}", vtxo_txid));
+    match grpc_client.unilateral_exit(vtxo_txid).await {
+        Ok(tx) => Ok(tx),
+        Err(e) => Err(anyhow::anyhow!("Failed to perform unilateral exit: {}", e))
     }
-    
-    // check it's in right state
-    let vtxo = transactions.iter()
-        .find(|tx| tx.txid == vtxo_txid && tx.is_settled == Some(false))
-        .cloned();
-    
-    if vtxo.is_none() {
-        // tx exists but is not in pending state
-        let tx = transactions.iter()
-            .find(|tx| tx.txid == vtxo_txid)
-            .unwrap();
-            
-        if tx.is_settled == Some(true) {
-            drop(transactions);
-            return Err(anyhow::anyhow!("Transaction is already settled: {}", vtxo_txid));
-        } else if tx.is_settled == None {
-            drop(transactions);
-            return Err(anyhow::anyhow!("Transaction is already cancelled: {}", vtxo_txid));
-        } else {
-            drop(transactions);
-            return Err(anyhow::anyhow!("Transaction is in an unknown state: {}", vtxo_txid));
-        }
-    }
-    
-    let vtxo = vtxo.unwrap();
-    drop(transactions);
-    
-    // generate a unique exit tx ID
-    let exit_txid = format!("exit_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
-    
-    // add exit tx to the history
-    let mut transactions = APP_STATE.transactions.lock().await;
-    
-    // mark original tx as cancelled
-    for tx in transactions.iter_mut() {
-        if tx.txid == vtxo_txid {
-            tx.is_settled = None;
-            break;
-        }
-    }
-    
-    // add exit tx
-    let tx = TransactionResponse {
-        txid: exit_txid.clone(),
-        // only deducting network fees (assuming it as 100 sats)
-        amount: -100, 
-        timestamp: chrono::Utc::now().timestamp(),
-        type_name: "Exit".to_string(),
-        is_settled: Some(true),
-    };
-    transactions.push(tx.clone());
-    
-    drop(transactions);
-    
-    // recalculate balance for consistency
-    APP_STATE.recalculate_balance().await?;
-    
-    Ok(tx)
 }

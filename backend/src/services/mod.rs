@@ -73,6 +73,7 @@ impl Persistence for InMemoryDb {
 type ArkClient = Client<BdkWallet<InMemoryDb>, BdkWallet<InMemoryDb>>;
 
 // Global state for web app
+#[derive(Clone)]
 pub struct AppState {
     pub client: Arc<Mutex<Option<ArkClient>>>,
     pub grpc_client: Arc<Mutex<ark_grpc::ArkGrpcService>>,
@@ -105,36 +106,30 @@ impl AppState {
     }
     
     pub async fn initialize(&self) -> Result<()> {
-        // initialize the Ark client
-        // load keys from env var or a secure store
-        let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "testnet".into()).as_str() {
-            "mainnet" => Network::Bitcoin,
-            "testnet" => Network::Testnet,
-            "regtest" => Network::Regtest,
-            _ => Network::Testnet,
-        };
-        
-        let esplora_url = std::env::var("ESPLORA_URL")
-            .unwrap_or_else(|_| "http://localhost:3002".into());
-            
+        // initialize the Ark gRPC client
         let ark_server_url = std::env::var("ARK_SERVER_URL")
             .unwrap_or_else(|_| "http://localhost:7070".into());
             
-        tracing::info!("Initializing with network: {}, esplora: {}, ark server: {}", 
-            network, esplora_url, ark_server_url);
-        // connect to Ark server using gRPC becasue Ark server only accepts gRPC and not http
+        tracing::info!("Initializing with ark server: {}", ark_server_url);
+        
+        // connect to Ark server using gRPC
         let mut grpc_client = self.grpc_client.lock().await;
         match grpc_client.connect(&ark_server_url).await {
             Ok(_) => {
                 tracing::info!("Successfully connected to Ark server via gRPC");
+                
+                // update app state with client info
+                match grpc_client.update_app_state().await {
+                    Ok(_) => tracing::info!("Successfully updated app state from Ark client"),
+                    Err(e) => tracing::warn!("Failed to update app state from Ark client: {}", e),
+                }
             },
             Err(e) => {
                 tracing::error!("Failed to connect to Ark server via gRPC: {}", e);
                 // continue even if connection fails so the app can still run with dummy data
             }
         }
-        // Note: We're not initializing the original client for now
-        // If you want to initialize it as well, you can add that code here
+        
         Ok(())
     }
 

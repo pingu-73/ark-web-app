@@ -1,4 +1,4 @@
-#![allow(unused_imports, unused_variables, unused_assignments)]
+#![allow(unused_imports, unused_variables, unused_assignments, dead_code, unused_features)]
 use axum::{
     extract::{Json, Path},
     response::IntoResponse,
