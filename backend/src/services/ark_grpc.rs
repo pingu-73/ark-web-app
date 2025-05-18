@@ -163,6 +163,37 @@ impl ArkWallet {
 }
 
 impl ark_client::wallet::BoardingWallet for ArkWallet {
+    // fn new_boarding_output(
+    //     &self,
+    //     server_pk: bitcoin::XOnlyPublicKey,
+    //     exit_delay: bitcoin::Sequence,
+    //     network: Network,
+    // ) -> Result<BoardingOutput, ark_client::Error> {
+    //     tracing::info!("Creating new boarding output");
+        
+    //     let sk = self.keypair.secret_key();
+    //     let (owner_pk, _) = self.keypair.x_only_public_key();
+        
+    //     let boarding_output = match BoardingOutput::new(&self.secp, server_pk, owner_pk, exit_delay, network) {
+    //         Ok(bo) => bo,
+    //         Err(e) => {
+    //             tracing::error!("Error creating boarding output: {}", e);
+    //             return Err(ark_client::Error::wallet(anyhow!("Failed to create boarding output: {}", e)));
+    //         }
+    //     };
+        
+    //     // store secret key for this public key
+    //     let mut secret_keys = self.secret_keys.blocking_lock();
+    //     secret_keys.insert(owner_pk.to_string(), sk);
+        
+    //     // store boarding output
+    //     let mut boarding_outputs = self.boarding_outputs.blocking_lock();
+    //     boarding_outputs.push(boarding_output.clone());
+        
+    //     tracing::info!("Created boarding output with address: {}", boarding_output.address());
+    //     Ok(boarding_output)
+    // }
+
     fn new_boarding_output(
         &self,
         server_pk: bitcoin::XOnlyPublicKey,
@@ -182,13 +213,19 @@ impl ark_client::wallet::BoardingWallet for ArkWallet {
             }
         };
         
-        // store secret key for this public key
-        let mut secret_keys = self.secret_keys.blocking_lock();
-        secret_keys.insert(owner_pk.to_string(), sk);
-        
-        // store boarding output
-        let mut boarding_outputs = self.boarding_outputs.blocking_lock();
-        boarding_outputs.push(boarding_output.clone());
+        tokio::task::block_in_place(|| { // to run async func in sync context
+            // get a handle to current runtime
+            let rt = tokio::runtime::Handle::current();
+            
+            // run async lock operations on runtime
+            rt.block_on(async {
+                let mut secret_keys = self.secret_keys.lock().await;
+                secret_keys.insert(owner_pk.to_string(), sk);
+                
+                let mut boarding_outputs = self.boarding_outputs.lock().await;
+                boarding_outputs.push(boarding_output.clone());
+            });
+        });
         
         tracing::info!("Created boarding output with address: {}", boarding_output.address());
         Ok(boarding_output)
@@ -320,7 +357,7 @@ impl ArkGrpcService {
             _ => Network::Regtest,
         };
         
-        let esplora_url = std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3002".to_string());
+        let esplora_url = std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:5050".to_string());
         
         tracing::info!("Using network: {}, esplora: {}, ark server: {}", network, esplora_url, server_url);
         
@@ -392,7 +429,7 @@ impl ArkGrpcService {
                             // try the full client initialization
                             let network = Network::Regtest;
                             let esplora_url = std::env::var("ESPLORA_URL")
-                                .unwrap_or_else(|_| "http://localhost:3002".to_string());
+                                .unwrap_or_else(|_| "http://localhost:5050".to_string());
                             
                             let keypair = self.load_or_create_keypair()?;
                             let blockchain = Arc::new(EsploraBlockchain::new(&esplora_url)?);
@@ -618,17 +655,29 @@ impl ArkGrpcService {
     }
     
     pub async fn get_boarding_address(&self) -> Result<String> {
-        let client_opt = self.get_ark_client().await?;
+        // get a clone of the mutex guard
+        let ark_client_mutex = self.ark_client.clone();
         
-        if let Some(client) = client_opt.as_ref() {
-            let address = client
-                .get_boarding_address()
-                .map_err(|e| anyhow!("Failed to get boarding address: {}", e))?;
-            return Ok(address.to_string());
-        }
+        // spawn a blocking task that will acquire the lock and use the client
+        let address_result = tokio::task::spawn_blocking(move || {
+            // inside blocking task, we can safely use blocking_lock()
+            let guard = ark_client_mutex.blocking_lock();
+            
+            if let Some(client) = guard.as_ref() {
+                // call sync method
+                match client.get_boarding_address() {
+                    Ok(address) => Ok(address.to_string()),
+                    Err(e) => Err(anyhow::anyhow!("Failed to get boarding address: {}", e))
+                }
+            } else {
+                // fallback if client unavailable
+                Ok("bcrt1dummy123456789".to_string())
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Join error: {}", e))??;
         
-        // fallback if client unavailable
-        Ok("bcrt1dummy123456789".to_string())
+        Ok(address_result)
     }
     
     pub async fn send_vtxo(&self, address_str: String, amount: u64) -> Result<String> {
