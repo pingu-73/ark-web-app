@@ -886,14 +886,31 @@ impl ArkGrpcService {
     
 
     pub async fn get_transaction_history(&self) -> Result<Vec<(String, i64, i64, String, bool)>> {
+        tracing::info!("ArkGrpcService: Starting to fetch transaction history");
+        
+        let timeout_duration = std::time::Duration::from_secs(5);
+        
         let client_opt = self.get_ark_client().await?;
+        tracing::info!("ArkGrpcService: Acquired Ark client lock");
         
         if let Some(client) = client_opt.as_ref() {
-            // update app state first
-            self.update_app_state().await?;
+            // update app state with a timeout
+            let update_future = self.update_app_state();
+            match tokio::time::timeout(timeout_duration, update_future).await {
+                Ok(update_result) => {
+                    match update_result {
+                        Ok(_) => tracing::info!("ArkGrpcService: Successfully updated app state"),
+                        Err(e) => tracing::warn!("ArkGrpcService: Failed to update app state: {}", e),
+                    }
+                },
+                Err(_) => {
+                    tracing::warn!("ArkGrpcService: Timeout while updating app state");
+                }
+            }
             
-            // get transactions from app state
+            // get tx from app state
             let transactions = crate::services::APP_STATE.transactions.lock().await;
+            tracing::info!("ArkGrpcService: Retrieved {} transactions from app state", transactions.len());
             
             let history = transactions.iter().map(|tx| {
                 (
@@ -908,7 +925,8 @@ impl ArkGrpcService {
             return Ok(history);
         }
         
-        // fallback to dummy data if client unavailable
+        // fallback if client unavailable
+        tracing::info!("ArkGrpcService: Using fallback transaction data");
         Ok(vec![
             (
                 "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string(),

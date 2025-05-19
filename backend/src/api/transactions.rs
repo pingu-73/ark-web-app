@@ -7,8 +7,13 @@ use axum::{
 use crate::services::transactions;
 
 pub async fn get_history() -> impl IntoResponse {
+    tracing::info!("API: Received request for transaction history");
+
     match transactions::get_transaction_history().await {
-        Ok(history) => (StatusCode::OK, Json(history)).into_response(),
+        Ok(history) => {
+            tracing::info!("API: Successfully retrieved {} transactions", history.len());
+            (StatusCode::OK, Json(history)).into_response()
+        },
         Err(e) => {
             tracing::error!("Error getting transaction history: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({

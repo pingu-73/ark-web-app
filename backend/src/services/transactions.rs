@@ -6,10 +6,15 @@ use bitcoin::opcodes::all;
 use std::collections::HashSet;
 
 pub async fn get_transaction_history() -> Result<Vec<TransactionResponse>> {
+    tracing::info!("Service: Starting to fetch transaction history");
+    
     let grpc_client = APP_STATE.grpc_client.lock().await;
+    tracing::info!("Service: Acquired gRPC client lock");
     
     match grpc_client.get_transaction_history().await {
         Ok(history) => {
+            tracing::info!("Service: Successfully fetched {} transactions from gRPC client", history.len());
+
             let transactions = history.into_iter().map(|(txid, amount, timestamp, type_name, is_settled)| {
                 TransactionResponse {
                     txid,
@@ -22,9 +27,14 @@ pub async fn get_transaction_history() -> Result<Vec<TransactionResponse>> {
             
             Ok(transactions)
         },
-        Err(_) => {
+        Err(e) => {
+            tracing::error!("Service: Error fetching transactions from gRPC client: {}", e);
+
             // Fallback to app state
+            tracing::info!("Service: Falling back to app state for transactions");
             let transactions = APP_STATE.transactions.lock().await.clone();
+            tracing::info!("Service: Retrieved {} transactions from app state", transactions.len());
+
             Ok(transactions)
         }
     }
@@ -89,7 +99,6 @@ pub async fn create_redeem_transaction(
     Ok(tx)
 }
 
-// new function to handle incoming redeem transactions
 pub async fn receive_redeem_transaction(
     sender_address: String,
     amount: u64,
