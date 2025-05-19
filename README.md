@@ -46,7 +46,7 @@ To download nigiri run the following command:
 ```
 curl https://getnigiri.vulpem.com | bash
 ```
-by default Nigiri's Esplora client uses a `port-5000:5000` change that to `port-5050:5000`. If using default port numbers for Esplora client update the enviroment variable in backend directory to match your esplora server address.
+by default Nigiri's Esplora frontend client uses a `port-5000:5000` change that to `port-5050:5000`. If using default port numbers for Esplora client update the enviroment variable in backend directory to match your esplora server address.
 
 ### Setup
 1. Clone the repo 

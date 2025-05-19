@@ -31,6 +31,33 @@ impl EsploraBlockchain {
         let client = esplora_client::Builder::new(url).build_async()?;
         Ok(Self { client })
     }
+
+    pub async fn test_esplora_connectivity(&self) -> Result<(), anyhow::Error> {
+        tracing::info!("Testing Esplora connectivity...");
+        
+        // get the blockchain tip hash
+        match self.client.get_tip_hash().await {
+            Ok(hash) => {
+                tracing::info!("Esplora server is accessible, tip hash: {}", hash);
+                
+                // get the current height as additional verification
+                match self.client.get_height().await {
+                    Ok(height) => {
+                        tracing::info!("Current blockchain height: {}", height);
+                        Ok(())
+                    },
+                    Err(e) => {
+                        tracing::error!("Failed to get blockchain height: {}", e);
+                        Err(anyhow::anyhow!("Failed to get blockchain height: {}", e))
+                    }
+                }
+            },
+            Err(e) => {
+                tracing::error!("Esplora server is not accessible: {}", e);
+                Err(anyhow::anyhow!("Esplora server is not accessible: {}", e))
+            }
+        }
+    }
 }
 
 impl Blockchain for EsploraBlockchain {
@@ -39,46 +66,90 @@ impl Blockchain for EsploraBlockchain {
         
         tracing::debug!("Finding outpoints for address: {}", address);
         
-        let txs = match self.client.scripthash_txs(&script_pubkey, None).await {
-            Ok(txs) => txs,
+        // [Debug!!]: get the tip hash to verify connectivity
+        match self.client.get_tip_hash().await {
+            Ok(hash) => {
+                tracing::debug!("Esplora server is accessible, tip hash: {}", hash);
+            },
             Err(e) => {
-                tracing::error!("Error fetching transactions: {}", e);
-                return Err(ark_client::Error::wallet(anyhow!("Esplora error: {}", e)));
-            }
-        };
-
-        let mut utxos = Vec::new();
-        for tx in txs {
-            for (vout, output) in tx.vout.iter().enumerate() {
-                if output.scriptpubkey == script_pubkey {
-                    let outpoint = bitcoin::OutPoint {
-                        txid: tx.txid,
-                        vout: vout as u32,
-                    };
-                    
-                    // ensure if output is spent
-                    let status = match self.client.get_output_status(&tx.txid, vout as u64).await {
-                        Ok(status) => status,
-                        Err(e) => {
-                            tracing::error!("Error checking output status: {}", e);
-                            return Err(ark_client::Error::wallet(anyhow!("Esplora error: {}", e)));
-                        }
-                    };
-                    
-                    let is_spent = status.map(|s| s.spent).unwrap_or(false);
-                    
-                    utxos.push(ExplorerUtxo {
-                        outpoint,
-                        amount: bitcoin::Amount::from_sat(output.value),
-                        confirmation_blocktime: tx.status.block_time,
-                        is_spent,
-                    });
-                }
+                tracing::warn!("Esplora server connectivity check failed: {}", e);
+                // return an empty list instead of failing
+                return Ok(Vec::new());
             }
         }
         
-        tracing::debug!("Found {} outpoints for address {}", utxos.len(), address);
-        Ok(utxos)
+        // get address stats (lighter call)
+        match self.client.get_address_stats(address).await {
+            Ok(stats) => {
+                // log stats using the actual fields available in AddressStats
+                tracing::debug!("Address stats for {}: chain_stats: {:?}, mempool_stats: {:?}", address, stats.chain_stats, stats.mempool_stats);
+                
+                // check if there are any tx
+                if stats.chain_stats.tx_count == 0 && stats.mempool_stats.tx_count == 0 {
+                    tracing::debug!("No transactions for address {}", address);
+                    return Ok(Vec::new());
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Failed to get address stats: {}", e);
+                // Continue anyway, as we'll try to get tx directly
+            }
+        }
+        
+        // get tx
+        match self.client.scripthash_txs(&script_pubkey, None).await {
+            Ok(txs) => {
+                tracing::debug!("Successfully fetched {} transactions for address {}", txs.len(), address);
+                
+                let mut utxos = Vec::new();
+                for tx in txs {
+                    for (vout, output) in tx.vout.iter().enumerate() {
+                        if output.scriptpubkey == script_pubkey {
+                            let outpoint = bitcoin::OutPoint {
+                                txid: tx.txid,
+                                vout: vout as u32,
+                            };
+                            
+                            // check if output is spent
+                            let is_spent = match self.client.get_output_status(&tx.txid, vout as u64).await {
+                                Ok(Some(status)) => status.spent,
+                                Ok(None) => false,
+                                Err(e) => {
+                                    tracing::warn!("Error checking output status: {}, assuming unspent", e);
+                                    false
+                                }
+                            };
+                            
+                            utxos.push(ExplorerUtxo {
+                                outpoint,
+                                amount: bitcoin::Amount::from_sat(output.value),
+                                confirmation_blocktime: tx.status.block_time,
+                                is_spent,
+                            });
+                        }
+                    }
+                }
+                
+                tracing::debug!("Found {} outpoints for address {}", utxos.len(), address);
+                Ok(utxos)
+            },
+            Err(e) => {
+                if e.to_string().contains("expected value") {
+                    tracing::warn!("Got 'expected value' error for address {}, this might be a new address with no transactions", address);
+                    return Ok(Vec::new());
+                }
+                
+                // Handle 404 errors (no transactions for this address)
+                if e.to_string().contains("404") {
+                    tracing::debug!("No transactions found for address {} (404)", address);
+                    return Ok(Vec::new());
+                }
+                
+                // For other errors, log and return empty list
+                tracing::error!("Error fetching transactions for address {}: {}", address, e);
+                Ok(Vec::new())
+            }
+        }
     }
 
     async fn find_tx(&self, txid: &Txid) -> Result<Option<Transaction>, ark_client::Error> {
@@ -326,7 +397,7 @@ impl ArkGrpcService {
             _ => Network::Regtest,
         };
         
-        let esplora_url = std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:5050".to_string());
+        let esplora_url = std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
         
         tracing::info!("Using network: {}, esplora: {}, ark server: {}", network, esplora_url, server_url);
         
@@ -335,6 +406,10 @@ impl ArkGrpcService {
         
         // initialize blockchain and wallet impls
         let blockchain = Arc::new(EsploraBlockchain::new(&esplora_url)?);
+        match blockchain.test_esplora_connectivity().await {
+            Ok(_) => tracing::info!("Esplora connectivity test passed"),
+            Err(e) => tracing::warn!("Esplora connectivity test failed: {}", e),
+        }
         let wallet = Arc::new(ArkWallet::new(keypair.clone(), network));
         
 
@@ -398,10 +473,14 @@ impl ArkGrpcService {
                             // try the full client initialization
                             let network = Network::Regtest;
                             let esplora_url = std::env::var("ESPLORA_URL")
-                                .unwrap_or_else(|_| "http://localhost:5050".to_string());
+                                .unwrap_or_else(|_| "http://localhost:3000".to_string());
                             
                             let keypair = self.load_or_create_keypair()?;
                             let blockchain = Arc::new(EsploraBlockchain::new(&esplora_url)?);
+                            match blockchain.test_esplora_connectivity().await {
+                                Ok(_) => tracing::info!("Esplora connectivity test passed"),
+                                Err(e) => tracing::warn!("Esplora connectivity test failed: {}", e),
+                            }
                             let wallet = Arc::new(ArkWallet::new(keypair.clone(), network));
                             
                             let offline_client = OfflineClient::new(
