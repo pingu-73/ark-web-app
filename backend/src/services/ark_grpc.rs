@@ -553,32 +553,10 @@ impl ArkGrpcService {
     }
     
     fn load_or_create_keypair(&self) -> Result<Keypair> {
-        let key_path = Path::new("./data/key.hex");
-        let key_dir = key_path.parent().unwrap();
+        // use the key manager from APP_STATE
+        let (keypair, _) = crate::services::APP_STATE.key_manager.load_or_create_wallet()?;
         
-        if !key_dir.exists() {
-            fs::create_dir_all(key_dir)?;
-        }
-        
-        let secp = Secp256k1::new();
-        
-        if key_path.exists() {
-            // load existing key
-            tracing::info!("Loading existing keypair");
-            let key_hex = fs::read_to_string(key_path)?;
-            let secret_key = SecretKey::from_str(key_hex.trim())?;
-            let keypair = Keypair::from_secret_key(&secp, &secret_key);
-            return Ok(keypair);
-        }
-        
-        // generate new key
-        tracing::info!("Generating new keypair");
-        let mut rng = bitcoin::secp256k1::rand::thread_rng();
-        let keypair = Keypair::new(&secp, &mut rng);
-        
-        // save key [TODO!! improve]
-        fs::write(key_path, keypair.secret_key().display_secret().to_string())?;
-        
+        tracing::info!("Loaded keypair with public key: {}", keypair.public_key());
         Ok(keypair)
     }
 

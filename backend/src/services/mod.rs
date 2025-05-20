@@ -14,95 +14,47 @@ use bitcoin::secp256k1::SecretKey;
 use bitcoin::XOnlyPublicKey;
 use std::sync::RwLock;
 
-// in-memory database for persistence 
-// refrenced from https://github.com/ArkLabsHQ/ark-rs/blob/7c793c4f3226dc4d5ce7637f3087adf56727799a/e2e-tests/tests/common.rs#L217
-#[derive(Default)]
-pub struct InMemoryDb {
-    boarding_outputs: RwLock<Vec<(SecretKey, BoardingOutput)>>,
-}
+use crate::storage::{DbManager, KeyManager};
 
-impl InMemoryDb {
-    pub fn new() -> Self {
-        Self {
-            boarding_outputs: RwLock::new(Vec::new()),
-        }
-    }
-}
-
-impl Persistence for InMemoryDb {
-    fn save_boarding_output(
-        &self,
-        sk: SecretKey,
-        boarding_output: BoardingOutput,
-    ) -> Result<(), ArkError> {
-        self.boarding_outputs
-            .write()
-            .unwrap()
-            .push((sk, boarding_output));
-
-        Ok(())
-    }
-
-    fn load_boarding_outputs(&self) -> Result<Vec<BoardingOutput>, ArkError> {
-        Ok(self
-            .boarding_outputs
-            .read()
-            .unwrap()
-            .clone()
-            .into_iter()
-            .map(|(_, b)| b)
-            .collect())
-    }
-
-    fn sk_for_pk(&self, pk: &XOnlyPublicKey) -> Result<SecretKey, ArkError> {
-        let maybe_sk = self
-            .boarding_outputs
-            .read()
-            .unwrap()
-            .iter()
-            .find_map(|(sk, b)| if b.owner_pk() == *pk { Some(*sk) } else { None });
-        
-        match maybe_sk {
-            Some(secret_key) => Ok(secret_key),
-            None => Err(ArkError::wallet(anyhow::anyhow!("Secret key not found for public key"))),
-        }
-    }
-}
-
-// type alias for our client
-type ArkClient = Client<BdkWallet<InMemoryDb>, BdkWallet<InMemoryDb>>;
-
-// Global state for web app
 #[derive(Clone)]
 pub struct AppState {
-    pub client: Arc<Mutex<Option<ArkClient>>>,
+    pub client: Arc<Mutex<Option<ark_client::Client<ark_grpc::EsploraBlockchain, ark_grpc::ArkWallet>>>>,
     pub grpc_client: Arc<Mutex<ark_grpc::ArkGrpcService>>,
     pub transactions: Arc<Mutex<Vec<crate::models::wallet::TransactionResponse>>>,
     pub balance: Arc<Mutex<crate::models::wallet::WalletBalance>>,
+    pub db_manager: Arc<DbManager>,
+    pub key_manager: Arc<KeyManager>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> Result<Self> {
+        let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".to_string()).as_str() {
+            "mainnet" => Network::Bitcoin,
+            "testnet" => Network::Testnet,
+            "signet" => Network::Signet,
+            _ => Network::Regtest,
+        };
+        
+        // initialize storage
+        let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string());
+        let db_path = format!("{}/ark.db", data_dir);
+        let db_manager = Arc::new(DbManager::new(&db_path)?);
+        let key_manager = Arc::new(KeyManager::new(&data_dir, network));
+        
+        Ok(Self {
             client: Arc::new(Mutex::new(None)),
             grpc_client: Arc::new(Mutex::new(ark_grpc::ArkGrpcService::new())),
-            transactions: Arc::new(Mutex::new(vec![
-                crate::models::wallet::TransactionResponse {
-                    txid: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string(),
-                    amount: 100000,
-                    timestamp: chrono::Utc::now().timestamp(),
-                    type_name: "Boarding".to_string(),
-                    is_settled: Some(true),
-                }
-            ])),
+            transactions: Arc::new(Mutex::new(Vec::new())),
             balance: Arc::new(Mutex::new(crate::models::wallet::WalletBalance {
-                confirmed: 100000, // initially all confirmed
+                confirmed: 0,
                 trusted_pending: 0,
                 untrusted_pending: 0,
                 immature: 0,
-                total: 100000,
+                total: 0,
             })),
-        }
+            db_manager,
+            key_manager,
+        })
     }
     
     pub async fn initialize(&self) -> Result<()> {
@@ -130,6 +82,22 @@ impl AppState {
             }
         }
         
+        // load tx from db
+        self.load_transactions_from_db().await?;
+        
+        // load balance from db
+        self.load_balance_from_db().await?;
+        
+        Ok(())
+    }
+
+    async fn load_transactions_from_db(&self) -> Result<()> {
+        // [TODO!!]  currently just use the in-memory tx
+        Ok(())
+    }
+
+    async fn load_balance_from_db(&self) -> Result<()> {
+        // [TODO!!] currently just use the in-memory balance
         Ok(())
     }
 
@@ -180,8 +148,6 @@ impl AppState {
                         balance.trusted_pending += amount;
                     } else {
                         // not enough confirmed balance => tx is invalid
-                        // [TODO!!] In a real implementation, we would reject or cancel this tx
-                        // for implementation we'll just log a warning
                         tracing::warn!("Invalid pending transaction: insufficient balance for txid {}", tx.txid);
                     }
                 }
@@ -189,6 +155,10 @@ impl AppState {
         }
         
         balance.total = balance.confirmed + balance.trusted_pending + balance.untrusted_pending + balance.immature;
+        
+        // save balance to db
+        let balance_json = serde_json::to_string(&*balance)?;
+        self.db_manager.save_setting("balance", &balance_json)?;
         
         Ok(())
     }
@@ -201,5 +171,5 @@ impl AppState {
 
 // initialize global state
 lazy_static::lazy_static! {
-    pub static ref APP_STATE: AppState = AppState::new();
+    pub static ref APP_STATE: AppState = AppState::new().expect("Failed to initialize app state");
 }

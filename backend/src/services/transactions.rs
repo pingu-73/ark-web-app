@@ -130,3 +130,23 @@ pub async fn unilateral_exit(vtxo_txid: String) -> Result<TransactionResponse> {
         Err(e) => Err(anyhow::anyhow!("Failed to perform unilateral exit: {}", e))
     }
 }
+
+pub async fn save_transaction_to_db(tx: &crate::models::wallet::TransactionResponse) -> Result<()> {
+    let conn = APP_STATE.db_manager.get_conn()?;
+    
+    conn.execute(
+        "INSERT OR REPLACE INTO transactions (
+            txid, amount, timestamp, type_name, is_settled, raw_tx
+        ) VALUES (?, ?, ?, ?, ?, ?)",
+        rusqlite::params![
+            tx.txid,
+            tx.amount,
+            tx.timestamp,
+            tx.type_name,
+            tx.is_settled,
+            Option::<String>::None, // raw_tx (optional)
+        ],
+    )?;
+    
+    Ok(())
+}

@@ -1,6 +1,7 @@
 mod api;
 mod services;
 mod models;
+mod storage;
 
 use axum::{
     routing::{get, post},
@@ -26,6 +27,10 @@ async fn main() {
         ))
         .with(tracing_subscriber::fmt::layer())
         .init();
+    
+    // create data directory if it doesn't exist
+    let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string());
+    std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
     // initialize Ark client
     match services::APP_STATE.initialize().await {

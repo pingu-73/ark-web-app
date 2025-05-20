@@ -105,7 +105,7 @@ pub async fn receive_vtxo(from_address: String, amount: u64) -> Result<Transacti
     let txid = format!("rx_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
     
     // add tx to the history
-    let mut transactions = APP_STATE.transactions.lock().await;
+    let transactions = APP_STATE.transactions.lock().await;
     let tx = TransactionResponse {
         txid: txid.clone(),
         amount: amount as i64, // +ve amount for incoming transaction
@@ -113,10 +113,16 @@ pub async fn receive_vtxo(from_address: String, amount: u64) -> Result<Transacti
         type_name: "Receive".to_string(),
         is_settled: Some(false), // initially pending
     };
+    
+    // save to in-memory state
+    let mut transactions = APP_STATE.transactions.lock().await;
     transactions.push(tx.clone());
     
     // release tx lock
     drop(transactions);
+
+    // save to db
+    crate::services::transactions::save_transaction_to_db(&tx).await?;
     
     // recalculate balance for consistency
     APP_STATE.recalculate_balance().await?;
