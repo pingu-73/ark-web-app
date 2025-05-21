@@ -94,6 +94,7 @@ The frontend is structured as follows:
 # Wallet APIs
 ### GET /api/wallet/info
 - Returns information about the wallet, including network, server URL, and connection status.
+
 **Example:**
 ```
 ~
@@ -103,6 +104,7 @@ The frontend is structured as follows:
 
 ### GET /api/wallet/available-balance
 - Returns the available (confirmed) balance that can be spent.
+
 **Example:**
 ```
 ❯ curl http://localhost:3030/api/wallet/available-balance
@@ -111,6 +113,7 @@ The frontend is structured as follows:
 
 ### GET /api/wallet/recalculate-balance 
 - Returns the wallet balance, including confirmed, pending, and total amounts.
+
 **Example:**
 ```
 ❯ curl -X POST http://localhost:3030/api/wallet/recalculate-balance
@@ -119,6 +122,7 @@ The frontend is structured as follows:
 
 ### GET /api/transactions
 - Returns the transaction history.
+
 **Example:** 
 ```
 ❯ curl http://localhost:3030/api/transactions
