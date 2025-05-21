@@ -19,17 +19,6 @@ pub async fn get_info() -> impl IntoResponse {
     }
 }
 
-pub async fn get_balance() -> impl IntoResponse {
-    match wallet::get_balance().await {
-        Ok(balance) => (StatusCode::OK, Json(balance)).into_response(),
-        Err(e) => {
-            tracing::error!("Error getting balance: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": e.to_string()
-            }))).into_response()
-        }
-    }
-}
 
 pub async fn get_address() -> impl IntoResponse {
     match wallet::get_offchain_address().await {
@@ -117,7 +106,7 @@ pub async fn send_on_chain(Json(request): Json<SendRequest>) -> impl IntoRespons
     }
 }
 
-pub async fn recalculate_balance() -> impl IntoResponse {
+pub async fn get_balance() -> impl IntoResponse {
     match crate::services::APP_STATE.recalculate_balance().await {
         Ok(_) => {
             let balance = crate::services::APP_STATE.balance.lock().await.clone();

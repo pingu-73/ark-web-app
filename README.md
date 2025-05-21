@@ -111,13 +111,23 @@ The frontend is structured as follows:
 {"available":1100000}
 ```
 
-### GET /api/wallet/recalculate-balance 
+### GET /api/wallet/balance 
 - Returns the wallet balance, including confirmed, pending, and total amounts.
 
 **Example:**
 ```
-❯ curl -X POST http://localhost:3030/api/wallet/recalculate-balance
-{"confirmed":1100000,"trusted_pending":0,"untrusted_pending":0,"immature":0,"total":1100000}
+❯ curl http://localhost:3030/api/wallet/balance | jq
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100    92  100    92    0     0  24898      0 --:--:-- --:--:-- --:--:-- 30666
+{
+  "confirmed": 1100000,
+  "trusted_pending": 0,
+  "untrusted_pending": 0,
+  "immature": 0,
+  "total": 1100000
+}
+
 ```
 
 ### GET /api/transactions
@@ -129,7 +139,7 @@ The frontend is structured as follows:
 [{"txid":"a3a1838f320fbd9e02cb8aa808f9308ba07a676a75787e6b8b1387abb3c6a885","amount":100000,"timestamp":1747820540,"type_name":"Boarding","is_settled":true},{"txid":"e3f0b8769a355543307e58ea34c9725330709e61e737e66f45c8149758843316","amount":1000000,"timestamp":1747820900,"type_name":"Boarding","is_settled":true}]
 ```
 
-> **NOTE:** Few of the above mentioned API's are still not connected to the frontend but can be used as CLI. Removal of unused/wrong api's from [main.rs](./backend/src/main.rs) is still remaining.
+> **NOTE:** Few of the above mentioned API's are still not connected to the frontend. Removal of unused/wrong api's from [main.rs](./backend/src/main.rs) is still remaining.
 
 # Reamining Work
 1. **Commit Reveal protocol**

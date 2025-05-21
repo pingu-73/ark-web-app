@@ -637,25 +637,6 @@ impl ArkGrpcService {
             Err(anyhow::anyhow!("Ark client not initialized"))
         }
     }
-
-    // get balance from Ark client
-    pub async fn get_balance(&self) -> Result<(u64, u64, u64)> {
-        let client_opt = self.get_ark_client().await?;
-
-        if let Some(client) = client_opt.as_ref() {
-            // get off-chain balance
-            if let Ok(offchain_balance) = client.offchain_balance().await {
-                return Ok((
-                    offchain_balance.confirmed().to_sat(),
-                    offchain_balance.pending().to_sat(),
-                    offchain_balance.total().to_sat()
-                ));
-            }
-        }
-        
-        // fallback if client unavailable
-        Ok((100000, 50000, 150000))
-    }
     
     pub async fn get_address(&self) -> Result<String> {
         let client_opt = self.get_ark_client().await?;

@@ -31,29 +31,6 @@ pub async fn get_wallet_info() -> Result<WalletInfo> {
     Ok(info)
 }
 
-pub async fn get_balance() -> Result<WalletBalance> {
-    // use real impl
-    let grpc_client = APP_STATE.grpc_client.lock().await;
-    
-    // get balance from Ark client
-    match grpc_client.get_balance().await {
-        Ok((confirmed, pending, total)) => {
-            Ok(WalletBalance {
-                confirmed,
-                trusted_pending: pending,
-                untrusted_pending: 0,
-                immature: 0,
-                total,
-            })
-        },
-        Err(_) => {
-            // fallback to app state
-            let balance = APP_STATE.balance.lock().await.clone();
-            Ok(balance)
-        }
-    }
-}
-
 pub async fn get_available_balance() -> Result<u64> {
     APP_STATE.recalculate_balance().await?;
 
