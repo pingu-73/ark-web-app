@@ -16,7 +16,9 @@ use ark_core::{ArkAddress, ArkTransaction, BoardingOutput};
 use bitcoin::key::{Keypair, Secp256k1};
 use bitcoin::secp256k1::SecretKey;
 use bitcoin::{Address, Amount, Network, Transaction, Txid};
-use rand::rng;
+use bitcoin::hashes::Hash;
+
+use rand::{rng, Rng};
 
 // global client instance
 static ARK_CLIENT: OnceCell<Arc<Mutex<Option<Client<EsploraBlockchain, ArkWallet>>>>> = OnceCell::new();
@@ -659,10 +661,6 @@ impl ArkGrpcService {
         let client_opt = self.get_ark_client().await?;
         
         if let Some(client) = client_opt.as_ref() {
-            // let (address, _) = client
-            //     .get_offchain_address()
-            //     .map_err(|e| anyhow!("Failed to get offchain address: {}", e))?;
-            // return Ok(address.to_string());
             match client.get_offchain_address() {
                 Ok((address, _)) => {
                     tracing::info!("Got real offchain address: {}", address);
@@ -710,26 +708,57 @@ impl ArkGrpcService {
         let client_opt = self.get_ark_client().await?;
         
         if let Some(client) = client_opt.as_ref() {
-            let address = ArkAddress::decode(&address_str)?;
+            tracing::info!("Parsing address: {}", address_str);
+            
+            let address = match ArkAddress::decode(&address_str) {
+                Ok(addr) => { 
+                    tracing::info!("Successfully parsed Ark address: {}", addr);
+                    addr
+                },
+                Err(e) => {
+                    tracing::error!("Failed to parse address '{}': {}", address_str, e);
+
+                    return Err(anyhow::anyhow!("parsing failed: {}", e));
+                }
+            };
+            
             let amount = Amount::from_sat(amount);
             
             tracing::info!("Sending {} sats to {}", amount.to_sat(), address_str);
             
-            let psbt = client
-                .send_vtxo(address, amount)
-                .await
-                .map_err(|e| anyhow!("Failed to send vtxo: {}", e))?;
-            let txid = psbt.extract_tx()?.compute_txid();
+            match client.send_vtxo(address, amount).await {
+                Ok(psbt) => {
+                    match psbt.extract_tx() {
+                        Ok(tx) => {
+                            let txid = tx.compute_txid();
+                            tracing::info!("Successfully sent VTXO with txid: {}", txid);
+                            
+                            // update app state after sending
+                            if let Err(e) = self.update_app_state().await {
+                                tracing::warn!("Failed to update app state after sending: {}", e);
+                            }
+                            
+                            Ok(txid.to_string())
+                        },
+                        Err(e) => {
+                            tracing::error!("Failed to extract transaction from PSBT: {}", e);
+                            Err(anyhow::anyhow!("Failed to extract transaction: {}", e))
+                        }
+                    }
+                },
+                Err(e) => {
+                    tracing::error!("Failed to send VTXO: {}", e);
+                    Err(anyhow::anyhow!("Failed to send vtxo: {}", e))
+                }
+            }
+        } 
+        else {
+            tracing::warn!("Ark client not available, using fallback");
             
-            // Update app state after sending
-            self.update_app_state().await?;
-            
-            return Ok(txid.to_string());
+            // fallback if client unavailable
+            let txid = format!("tx_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
+            Ok(txid)
         }
-        
-        // fallback if client unavailable
-        let txid = format!("tx_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
-        Ok(txid)
     }
     
 
@@ -934,5 +963,43 @@ impl ArkGrpcService {
         };
         
         Ok(tx)
+    }
+
+    pub async fn send_on_chain(&self, bitcoin_address: bitcoin::Address, amount: u64) -> Result<Txid> {
+        let client_opt = self.get_ark_client().await?;
+        
+        if let Some(client) = client_opt.as_ref() {
+            tracing::info!("Sending {} sats on-chain to {}", amount, bitcoin_address);
+            
+            // convert amount to Bitcoin Amount
+            let amount = Amount::from_sat(amount);
+            
+            // send on-chain
+            match client.send_on_chain(bitcoin_address, amount).await {
+                Ok(txid) => {
+                    tracing::info!("Successfully sent on-chain with txid: {}", txid);
+                    
+                    // update app state after sending
+                    if let Err(e) = self.update_app_state().await {
+                        tracing::warn!("Failed to update app state after sending: {}", e);
+                    }
+                    
+                    Ok(txid)
+                },
+                Err(e) => {
+                    tracing::error!("Failed to send on-chain: {}", e);
+                    Err(anyhow::anyhow!("Failed to send on-chain: {}", e))
+                }
+            }
+        } else {
+            tracing::warn!("Ark client not available, using fallback");
+            // fallback if client unavailable (generate a random txid)
+            let mut rng = rand::rng();
+            let random_bytes: [u8; 32] = rng.random();
+            let txid = Txid::from_slice(&random_bytes)
+                .map_err(|e| anyhow::anyhow!("Failed to create random txid: {}", e))?;
+            
+            Ok(txid)
+        }
     }
 }

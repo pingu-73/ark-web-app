@@ -56,9 +56,60 @@ pub async fn get_transaction(txid: String) -> Result<TransactionResponse> {
 pub async fn participate_in_round() -> Result<Option<String>> {
     let grpc_client = APP_STATE.grpc_client.lock().await;
     
-    match grpc_client.participate_in_round().await {
-        Ok(txid) => Ok(txid),
-        Err(e) => Err(anyhow::anyhow!("Failed to participate in round: {}", e))
+    let mut rng = bip39::rand::rngs::OsRng;
+    
+    let client_opt = grpc_client.get_ark_client().await?;
+    if client_opt.is_none() {
+        return Err(anyhow::anyhow!("Ark client not available"));
+    }
+    let client = client_opt.as_ref().unwrap(); // !!! fix [.as_ref or .as_mut??]
+    
+    // try to board
+    match client.board(&mut rng).await {
+        Ok(_) => {
+            tracing::info!("Successfully participated in round");
+            
+            // update app state after round participation
+            if let Err(e) = grpc_client.update_app_state().await {
+                tracing::warn!("Failed to update app state after round participation: {}", e);
+            }
+            
+            // recalculate balance
+            APP_STATE.recalculate_balance().await?;
+            
+            // return a placeholder txid for now
+            let txid = format!("round_{}", chrono::Utc::now().timestamp());
+            
+            // create a tx record
+            let tx = crate::models::wallet::TransactionResponse {
+                txid: txid.clone(),
+                amount: 0, // rounds don't change the total balance
+                timestamp: chrono::Utc::now().timestamp(),
+                type_name: "Round".to_string(),
+                is_settled: Some(true),
+            };
+            
+            // save to in-memory state
+            let mut transactions = APP_STATE.transactions.lock().await;
+            transactions.push(tx.clone());
+            drop(transactions);
+            
+            // save to db
+            if let Err(e) = crate::services::transactions::save_transaction_to_db(&tx).await {
+                tracing::error!("Error saving transaction to database: {}", e);
+            }
+            
+            Ok(Some(txid))
+        },
+        Err(e) => {
+            if e.to_string().contains("No boarding outputs") && e.to_string().contains("No VTXOs") {
+                tracing::info!("No outputs to include in round");
+                return Ok(None);
+            } else {
+                tracing::error!("Error participating in round: {}", e);
+                return Err(anyhow::anyhow!("Error participating in round: {}", e));
+            }
+        }
     }
 }
 

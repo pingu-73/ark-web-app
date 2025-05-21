@@ -15,7 +15,7 @@ ark-bdk-wallet = { git = "https://github.com/ArkLabsHQ/ark-rs", rev = "c754d7adc
 ark-grpc = { git = "https://github.com/ArkLabsHQ/ark-rs", rev = "c754d7adc8552b14d9d14ef871df271196089d8f" }
 
 # Web server
-axum = "0.6"
+axum = { version = "0.6", features = ["macros"] }
 tower-http = { version = "0.4", features = ["cors", "trace"] }
 tokio = { version = "1.28", features = ["full"] }
 

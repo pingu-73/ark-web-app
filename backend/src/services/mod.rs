@@ -114,51 +114,46 @@ impl AppState {
             total: 0,
         };
         
-        // First pass: calculate confirmed balance from settled tx
+        // calculate balance from tx
         for tx in transactions.iter() {
             if tx.is_settled == Some(true) {
+                // for settled tx
                 if tx.amount > 0 {
+                    // incoming tx
                     balance.confirmed += tx.amount as u64;
                 } else {
-                    // don't subtract if it would result in negative balance
+                    // outgoing tx
                     let amount = tx.amount.abs() as u64;
                     if balance.confirmed >= amount {
                         balance.confirmed -= amount;
+                    } else {
+                        tracing::warn!("Negative balance would result from transaction {}", tx.txid);
                     }
                 }
-            }
-        }
-        
-        // Second pass: calculate pending balance from unsettled tx
-        let mut available_confirmed = balance.confirmed;
-        
-        for tx in transactions.iter() {
-            if tx.is_settled == Some(false) {
+            } else if tx.is_settled == Some(false) {
+                // for pending tx
                 if tx.amount > 0 {
                     // incoming tx
                     balance.untrusted_pending += tx.amount as u64;
                 } else {
                     // outgoing tx
                     let amount = tx.amount.abs() as u64;
-                    
-                    // check if we have enough confirmed balance
-                    if available_confirmed >= amount {
-                        // if enough confirmed balance => valid pending tx
-                        available_confirmed -= amount;
-                        balance.trusted_pending += amount;
-                    } else {
-                        // not enough confirmed balance => tx is invalid
-                        tracing::warn!("Invalid pending transaction: insufficient balance for txid {}", tx.txid);
-                    }
+                    balance.trusted_pending += amount;
                 }
             }
         }
         
-        balance.total = balance.confirmed + balance.trusted_pending + balance.untrusted_pending + balance.immature;
+        // calculate total
+        balance.total = balance.confirmed + balance.untrusted_pending;
         
         // save balance to db
         let balance_json = serde_json::to_string(&*balance)?;
         self.db_manager.save_setting("balance", &balance_json)?;
+        
+        tracing::info!(
+            "Recalculated balance: confirmed={}, trusted_pending={}, untrusted_pending={}, total={}",
+            balance.confirmed, balance.trusted_pending, balance.untrusted_pending, balance.total
+        );
         
         Ok(())
     }

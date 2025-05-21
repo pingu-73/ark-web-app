@@ -10,6 +10,8 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256;
 use bitcoin::hashes::ripemd160;
 
+use std::str::FromStr;
+
 pub async fn get_wallet_info() -> Result<WalletInfo> {
     let grpc_client = APP_STATE.grpc_client.lock().await;
     
@@ -53,8 +55,14 @@ pub async fn get_balance() -> Result<WalletBalance> {
 }
 
 pub async fn get_available_balance() -> Result<u64> {
+    APP_STATE.recalculate_balance().await?;
+
     let balance = APP_STATE.balance.lock().await;
-    Ok(balance.confirmed)
+    let available = balance.confirmed;
+
+    tracing::info!("Available balance: {}", available);
+
+    Ok(available)
 }
 
 pub async fn get_offchain_address() -> Result<AddressResponse> {
@@ -79,10 +87,13 @@ pub async fn check_deposits() -> Result<serde_json::Value> {
     let grpc_client = APP_STATE.grpc_client.lock().await;
     
     match grpc_client.check_deposits().await {
-        Ok(true) => Ok(serde_json::json!({
-            "message": "Successfully processed deposits",
-            "success": true
-        })),
+        Ok(true) => {
+            APP_STATE.recalculate_balance().await?;
+            Ok(serde_json::json!({
+                "message": "Successfully processed deposits",
+                "success": true
+            }))
+        },
         Ok(false) => Ok(serde_json::json!({
             "message": "No deposits to process",
             "success": false
@@ -92,11 +103,61 @@ pub async fn check_deposits() -> Result<serde_json::Value> {
 }
 
 pub async fn send_vtxo(address: String, amount: u64) -> Result<SendResponse> {
+    let available_balance = get_available_balance().await?;
+    if available_balance < amount {
+        return Err(anyhow::anyhow!(
+            "Insufficient balance: have {} available, need {}",
+            available_balance, amount
+        ));
+    }
+
     let grpc_client = APP_STATE.grpc_client.lock().await;
     
-    match grpc_client.send_vtxo(address, amount).await {
-        Ok(txid) => Ok(SendResponse { txid }),
-        Err(e) => Err(anyhow::anyhow!("Failed to send VTXO: {}", e))
+    tracing::info!("Attempting to send {} satoshis to address: {}", amount, address);
+    
+    // validate the address format
+    match ArkAddress::decode(&address) {
+        Ok(ark_address) => {
+            tracing::info!("Successfully parsed Ark address");
+            
+            match grpc_client.send_vtxo(address, amount).await {
+                Ok(txid) => {
+                    tracing::info!("Successfully sent VTXO with txid: {}", txid);
+                    
+                    // create tx record
+                    let tx = TransactionResponse {
+                        txid: txid.clone(),
+                        amount: -(amount as i64),
+                        timestamp: chrono::Utc::now().timestamp(),
+                        type_name: "Redeem".to_string(),
+                        is_settled: Some(false),
+                    };
+                    
+                    // save to in-memory state
+                    let mut transactions = APP_STATE.transactions.lock().await;
+                    transactions.push(tx.clone());
+                    drop(transactions);
+                    
+                    // save to db
+                    if let Err(e) = crate::services::transactions::save_transaction_to_db(&tx).await {
+                        tracing::error!("Error saving transaction to database: {}", e);
+                    }
+                    
+                    // recalculate balance
+                    APP_STATE.recalculate_balance().await?;
+                    
+                    Ok(SendResponse { txid })
+                },
+                Err(e) => {
+                    tracing::error!("Failed to send VTXO: {}", e);
+                    Err(anyhow::anyhow!("Failed to send VTXO: {}", e))
+                }
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to parse Ark address: {}", e);
+            Err(anyhow::anyhow!("Failed to parse Ark address: {}", e))
+        }
     }
 }
 
@@ -128,4 +189,68 @@ pub async fn receive_vtxo(from_address: String, amount: u64) -> Result<Transacti
     APP_STATE.recalculate_balance().await?;
     
     Ok(tx)
+}
+
+
+pub async fn send_on_chain(address: String, amount: u64) -> Result<SendResponse> {
+    let available_balance = get_available_balance().await?;
+    if available_balance < amount {
+        return Err(anyhow::anyhow!(
+            "Insufficient balance: have {} available, need {}",
+            available_balance, amount
+        ));
+    }
+    
+    let grpc_client = APP_STATE.grpc_client.lock().await;
+    
+    tracing::info!("Attempting to send {} satoshis on-chain to address: {}", amount, address);
+    
+    // validate Bitcoin address
+    let bitcoin_address = match bitcoin::Address::from_str(&address) 
+        .and_then(|a| a.require_network(bitcoin::Network::Bitcoin)) 
+    {
+        Ok(addr) => {
+            tracing::info!("Successfully parsed Bitcoin address");
+            addr
+        },
+        Err(e) => {
+            tracing::error!("Failed to parse Bitcoin address: {}", e);
+            return Err(anyhow::anyhow!("Invalid Bitcoin address: {}", e));
+        }
+    };
+    
+    // send on-chain
+    match grpc_client.send_on_chain(bitcoin_address, amount).await {
+        Ok(txid) => {
+            tracing::info!("Successfully sent on-chain with txid: {}", txid);
+            
+            // create tx record
+            let tx = TransactionResponse {
+                txid: txid.to_string(),
+                amount: -(amount as i64),
+                timestamp: chrono::Utc::now().timestamp(),
+                type_name: "OnChain".to_string(),
+                is_settled: Some(false),
+            };
+            
+            // save to in-memory state
+            let mut transactions = APP_STATE.transactions.lock().await;
+            transactions.push(tx.clone());
+            drop(transactions);
+            
+            // save to db
+            if let Err(e) = crate::services::transactions::save_transaction_to_db(&tx).await {
+                tracing::error!("Error saving transaction to database: {}", e);
+            }
+            
+            // recalculate balance
+            APP_STATE.recalculate_balance().await?;
+            
+            Ok(SendResponse { txid: txid.to_string() })
+        },
+        Err(e) => {
+            tracing::error!("Failed to send on-chain: {}", e);
+            Err(anyhow::anyhow!("Failed to send on-chain: {}", e))
+        }
+    }
 }

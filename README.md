@@ -91,49 +91,74 @@ The frontend is structured as follows:
 - `src/components/`: Reusable UI components
 - `src/api/`: API client
 
-## API Documentation
-The backend provides the following API endpoints:
-- `GET /api/wallet/info`: Get wallet information
-- `GET /api/wallet/balance`: Get wallet balance
-- `GET /api/wallet/address`: Get an Ark address for receiving off-chain payments
-- `GET /api/wallet/boarding-address`: Get a Bitcoin address for receiving on-chain payments
-- `POST /api/wallet/send`: Send a payment (either Ark or on-chain)
-- `GET /api/transactions`: Get transaction history
-- `POST /api/round/participate`: Participate in a round
+# Wallet APIs
+### GET /api/wallet/info
+- Returns information about the wallet, including network, server URL, and connection status.
+**Example:**
+```
+~
+❯ curl http://localhost:3030/api/wallet/info
+{"network":"regtest","server_url":"http://localhost:7070","connected":true}
+```
 
+### GET /api/wallet/available-balance
+- Returns the available (confirmed) balance that can be spent.
+**Example:**
+```
+❯ curl http://localhost:3030/api/wallet/available-balance
+{"available":1100000}
+```
+
+### GET /api/wallet/recalculate-balance 
+- Returns the wallet balance, including confirmed, pending, and total amounts.
+**Example:**
+```
+❯ curl -X POST http://localhost:3030/api/wallet/recalculate-balance
+{"confirmed":1100000,"trusted_pending":0,"untrusted_pending":0,"immature":0,"total":1100000}
+```
+
+### GET /api/transactions
+- Returns the transaction history.
+**Example:** 
+```
+❯ curl http://localhost:3030/api/transactions
+[{"txid":"a3a1838f320fbd9e02cb8aa808f9308ba07a676a75787e6b8b1387abb3c6a885","amount":100000,"timestamp":1747820540,"type_name":"Boarding","is_settled":true},{"txid":"e3f0b8769a355543307e58ea34c9725330709e61e737e66f45c8149758843316","amount":1000000,"timestamp":1747820900,"type_name":"Boarding","is_settled":true}]
+```
+
+> **NOTE:** Few of the above mentioned API's are still not connected to the frontend but can be used as CLI. Removal of unused/wrong api's from [main.rs](./backend/src/main.rs) is still remaining.
 
 # Reamining Work
 1. **Commit Reveal protocol**
-- Add models for commit and reveal transactions
-- Create API endpoints for the game flow
-- Implement service functions for game logic
+- [ ] Add models for commit and reveal transactions
+- [ ] Create API endpoints for the game flow
+- [ ] Implement service functions for game logic
 
 2. **Game State Management**
-- Track game states (waiting for commit, waiting for reveal, completed)
-- Handle timeouts and disputes
-- Manage game history
+- [ ] Track game states (waiting for commit, waiting for reveal, completed)
+- [ ] Handle timeouts and disputes
+- [ ] Manage game history
 
 3. **Features**
-- proper random number generation
-- verification of commitments and reveals
+- [ ] proper random number generation
+- [ ] verification of commitments and reveals
 
 4. **Crate with Core functionality for other developers to use**
 
 5. **Features**
-- VTXO Tree Implementation
-- Connector Mechanism (to ensure atomicity b/w forfeit txs and round txs)
-- Timelock Handling (for boarding outputs and unilateral exits)
-- Batch Expiry (track and handle batch expiry for liquidity recycling)
+- [ ] VTXO Tree Implementation
+- [ ] Connector Mechanism (to ensure atomicity b/w forfeit txs and round txs)
+- [ ] Timelock Handling (for boarding outputs and unilateral exits)
+- [ ] Batch Expiry (track and handle batch expiry for liquidity recycling)
 
 6. **Dummy to real impl**
-- make actual gRPC calls to the Ark server for balances, addresses, and tx history
-- add signing and verification steps in Round participation
+- [x] make actual gRPC calls to the Ark server for balances, addresses, and tx history
+- [ ] add signing and verification steps in Round participation
 
 7. **Security Fatures (Improvement from current impl)**
-- tx Broadcasting (currently not broadcasting txs to network)
-- bitcoin blockchain interaction for on-chain tx
-- UTXO management
-- Key Management
-- Signature Verification
-- Add cryptographic op for protocol's security
-- Implement taproot script with collaborative and exit paths
+- [ ] tx Broadcasting (currently not broadcasting txs to network)
+- [ ] bitcoin blockchain interaction for on-chain tx
+- [ ] UTXO management
+- [x] Key Management
+- [ ] Signature Verification
+- [ ] Add cryptographic op for protocol's security
+- [ ] Implement taproot script with collaborative and exit paths

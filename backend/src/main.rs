@@ -71,6 +71,10 @@ async fn main() {
         .route("/api/wallet/available-balance", get(api::wallet::get_available_balance))
         // .route("/api/wallet/check-deposits", post(api::wallet::check_deposits))
         .route("/api/wallet/receive", post(api::wallet::receive_vtxo))
+        .route("/api/wallet/recalculate-balance", post(api::wallet::recalculate_balance))
+
+        // on-chain tx
+        .route("/api/wallet/send-onchain", post(api::wallet::send_on_chain))
         
         // tx routes
         .route("/api/transactions", get(api::transactions::get_history))

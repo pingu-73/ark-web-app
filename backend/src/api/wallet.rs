@@ -104,3 +104,30 @@ pub async fn receive_vtxo(Json(request): Json<crate::models::wallet::ReceiveRequ
         }
     }
 }
+
+pub async fn send_on_chain(Json(request): Json<SendRequest>) -> impl IntoResponse {
+    match wallet::send_on_chain(request.address, request.amount).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            tracing::error!("Error sending on-chain: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}
+
+pub async fn recalculate_balance() -> impl IntoResponse {
+    match crate::services::APP_STATE.recalculate_balance().await {
+        Ok(_) => {
+            let balance = crate::services::APP_STATE.balance.lock().await.clone();
+            (StatusCode::OK, Json(balance)).into_response()
+        },
+        Err(e) => {
+            tracing::error!("Error recalculating balance: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}
