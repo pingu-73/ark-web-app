@@ -12,8 +12,10 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use dotenv::dotenv;
+use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() {
@@ -74,13 +76,14 @@ async fn main() {
 
         // on-chain tx
         .route("/api/wallet/send-onchain", post(api::wallet::send_on_chain))
+        .route("/api/debug/vtxos", get(api::wallet::debug_vtxos))
         
         // tx routes
         .route("/api/transactions", get(api::transactions::get_history))
         .route("/api/transactions/:txid", get(api::transactions::get_transaction))
         
         // round participation
-        // .route("/api/round/participate", post(api::transactions::participate_in_round))
+        .route("/api/round/participate", post(api::transactions::participate_in_round))
 
         // unilateral exit
         .route("/api/transactions/exit", post(api::transactions::unilateral_exit))
@@ -95,18 +98,20 @@ async fn main() {
         .parse::<u16>()
         .expect("PORT must be a number");
     
-    let shutdown_signal = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to install CTRL+C signal handler");
-        tracing::info!("Shutting down gracefully...");
-    };
-
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = TcpListener::bind(addr).await.unwrap();
+    
     tracing::info!("listening on {}", addr);
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal)
+    
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap();
+}
+
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to install CTRL+C signal handler");
+    tracing::info!("Shutting down gracefully...");
 }

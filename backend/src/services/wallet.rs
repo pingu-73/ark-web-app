@@ -231,3 +231,45 @@ pub async fn send_on_chain(address: String, amount: u64) -> Result<SendResponse>
         }
     }
 }
+
+
+pub async fn debug_vtxos() -> Result<serde_json::Value> {
+    let grpc_client = APP_STATE.grpc_client.lock().await;
+    
+    // Get client
+    let client_opt = grpc_client.get_ark_client().await?;
+    if client_opt.is_none() {
+        return Ok(serde_json::json!({
+            "error": "Ark client not available"
+        }));
+    }
+    let client = client_opt.as_ref().unwrap(); // !!! FIX [.as_ref or .as_mut??]
+    
+    // Get spendable VTXOs
+    match client.spendable_vtxos().await {
+        Ok(vtxos) => {
+            Ok(serde_json::json!({
+                "count": vtxos.len(),
+                "vtxos": vtxos.iter().map(|(outpoints, vtxo)| {
+                    serde_json::json!({
+                        "outpoints": outpoints.len(),
+                        "vtxo_address": vtxo.address().to_string(),
+                        "outpoint_details": outpoints.iter().map(|o| {
+                            serde_json::json!({
+                                "outpoint": o.outpoint.to_string(),
+                                "amount": o.amount.to_sat(),
+                                "is_pending": o.is_pending,
+                                "expire_at": o.expire_at,
+                            })
+                        }).collect::<Vec<_>>()
+                    })
+                }).collect::<Vec<_>>()
+            }))
+        },
+        Err(e) => {
+            Ok(serde_json::json!({
+                "error": format!("Failed to get spendable VTXOs: {}", e)
+            }))
+        }
+    }
+}

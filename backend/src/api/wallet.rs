@@ -120,3 +120,15 @@ pub async fn get_balance() -> impl IntoResponse {
         }
     }
 }
+
+pub async fn debug_vtxos() -> impl IntoResponse {
+    match wallet::debug_vtxos().await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(e) => {
+            tracing::error!("Error debugging VTXOs: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}

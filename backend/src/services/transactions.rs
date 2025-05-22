@@ -54,28 +54,42 @@ pub async fn get_transaction(txid: String) -> Result<TransactionResponse> {
 }
 
 pub async fn participate_in_round() -> Result<Option<String>> {
+    tracing::info!("Starting round participation");
     let grpc_client = APP_STATE.grpc_client.lock().await;
-    
+    tracing::info!("Acquired gRPC client lock");
     let mut rng = bip39::rand::rngs::OsRng;
     
-    let client_opt = grpc_client.get_ark_client().await?;
+    let client_opt = match grpc_client.get_ark_client().await {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::error!("Failed to get Ark client: {}", e);
+            return Err(anyhow::anyhow!("Failed to get Ark client: {}", e));
+        }
+    };
     if client_opt.is_none() {
+        tracing::error!("Ark client not available");
         return Err(anyhow::anyhow!("Ark client not available"));
     }
     let client = client_opt.as_ref().unwrap(); // !!! fix [.as_ref or .as_mut??]
-    
+    tracing::info!("Got Ark client");
+
     // try to board
+    tracing::info!("Attempting to board funds");
     match client.board(&mut rng).await {
         Ok(_) => {
             tracing::info!("Successfully participated in round");
             
             // update app state after round participation
-            if let Err(e) = grpc_client.update_app_state().await {
-                tracing::warn!("Failed to update app state after round participation: {}", e);
+            match grpc_client.update_app_state().await {
+                Ok(_) => tracing::info!("Successfully updated app state after round participation"),
+                Err(e) => tracing::warn!("Failed to update app state after round participation: {}", e),
             }
             
             // recalculate balance
-            APP_STATE.recalculate_balance().await?;
+            match APP_STATE.recalculate_balance().await {
+                Ok(_) => tracing::info!("Successfully recalculated balance after round participation"),
+                Err(e) => tracing::warn!("Failed to recalculate balance after round participation: {}", e),
+            }
             
             // return a placeholder txid for now
             let txid = format!("round_{}", chrono::Utc::now().timestamp());
@@ -95,13 +109,16 @@ pub async fn participate_in_round() -> Result<Option<String>> {
             drop(transactions);
             
             // save to db
-            if let Err(e) = crate::services::transactions::save_transaction_to_db(&tx).await {
-                tracing::error!("Error saving transaction to database: {}", e);
+            match crate::services::transactions::save_transaction_to_db(&tx).await {
+                Ok(_) => tracing::info!("Successfully saved round transaction to database"),
+                Err(e) => tracing::error!("Error saving transaction to database: {}", e),
             }
             
             Ok(Some(txid))
         },
         Err(e) => {
+            tracing::error!("Error participating in round: {}", e);
+            
             if e.to_string().contains("No boarding outputs") && e.to_string().contains("No VTXOs") {
                 tracing::info!("No outputs to include in round");
                 return Ok(None);

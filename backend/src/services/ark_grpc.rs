@@ -3,6 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use ark_client::error::ErrorContext;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use once_cell::sync::OnceCell;
 use std::path::Path;
 use std::fs;
@@ -218,7 +219,8 @@ pub struct ArkWallet {
     keypair: Keypair,
     secp: Secp256k1<bitcoin::secp256k1::All>,
     network: Network,
-    boarding_outputs: Mutex<Vec<BoardingOutput>>,
+    // boarding_outputs: Mutex<Vec<BoardingOutput>>,
+    boarding_outputs: RwLock<Vec<BoardingOutput>>,
     secret_keys: Mutex<std::collections::HashMap<String, SecretKey>>,
 }
 
@@ -229,7 +231,8 @@ impl ArkWallet {
             keypair,
             secp,
             network,
-            boarding_outputs: Mutex::new(Vec::new()),
+            // boarding_outputs: Mutex::new(Vec::new()),
+            boarding_outputs: RwLock::new(Vec::new()),
             secret_keys: Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -264,7 +267,8 @@ impl ark_client::wallet::BoardingWallet for ArkWallet {
                 let mut secret_keys = self.secret_keys.lock().await;
                 secret_keys.insert(owner_pk.to_string(), sk);
                 
-                let mut boarding_outputs = self.boarding_outputs.lock().await;
+                // let mut boarding_outputs = self.boarding_outputs.lock().await;
+                let mut boarding_outputs = self.boarding_outputs.write().await;
                 boarding_outputs.push(boarding_output.clone());
             });
         });
@@ -273,9 +277,17 @@ impl ark_client::wallet::BoardingWallet for ArkWallet {
         Ok(boarding_output)
     }
 
+
+    // [FIX!!] b'coz cannot block the current thread from within a runtime when participating in rounds.
+    // fn get_boarding_outputs(&self) -> Result<Vec<BoardingOutput>, ark_client::Error> {
+    //     let boarding_outputs = self.boarding_outputs.blocking_lock();
+    //     Ok(boarding_outputs.clone())
+    // }
     fn get_boarding_outputs(&self) -> Result<Vec<BoardingOutput>, ark_client::Error> {
-        let boarding_outputs = self.boarding_outputs.blocking_lock();
-        Ok(boarding_outputs.clone())
+        match self.boarding_outputs.try_read() {
+            Ok(guard) => Ok(guard.clone()),
+            Err(_) => Err(ark_client::Error::wallet(anyhow!("Failed to acquire read lock for boarding outputs")))
+        }
     }
 
     fn sign_for_pk(&self, pk: &bitcoin::XOnlyPublicKey, msg: &bitcoin::secp256k1::Message) -> Result<bitcoin::secp256k1::schnorr::Signature, ark_client::Error> {

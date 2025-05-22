@@ -36,14 +36,34 @@ pub async fn get_transaction(Path(txid): Path<String>) -> impl IntoResponse {
 }
 
 pub async fn participate_in_round() -> impl IntoResponse {
-    match transactions::participate_in_round().await {
-        Ok(txid) => (StatusCode::OK, Json(serde_json::json!({
-            "txid": txid
-        }))).into_response(),
-        Err(e) => {
-            tracing::error!("Error participating in round: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": e.to_string()
+    tracing::info!("API: Received request for round participation");
+    
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        transactions::participate_in_round()
+    ).await {
+        Ok(result) => match result {
+            Ok(Some(txid)) => {
+                tracing::info!("API: Successfully participated in round: {}", txid);
+                (StatusCode::OK, Json(serde_json::json!({ "txid": txid }))).into_response()
+            },
+            Ok(None) => {
+                tracing::info!("API: No outputs to include in round");
+                (StatusCode::OK, Json(serde_json::json!({ 
+                    "message": "No outputs to include in round. Make sure you have funded your boarding address."
+                }))).into_response()
+            },
+            Err(e) => {
+                tracing::error!("API: Error participating in round: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ 
+                    "error": e.to_string() 
+                }))).into_response()
+            }
+        },
+        Err(_) => {
+            tracing::error!("API: Timeout while participating in round");
+            (StatusCode::REQUEST_TIMEOUT, Json(serde_json::json!({ 
+                "error": "Operation timed out. This could be due to network issues or a deadlock."
             }))).into_response()
         }
     }
