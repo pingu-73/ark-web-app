@@ -1,15 +1,11 @@
 #![allow(unused_imports, unused_variables)]
 use anyhow::{anyhow, Context, Result};
-use ark_client::error::ErrorContext;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::sync::RwLock;
-use once_cell::sync::OnceCell;
-use std::path::Path;
-use std::fs;
-use std::str::FromStr;
+use parking_lot::{Mutex, RwLock};
+use rand::Rng;
 
 use ark_grpc::Client as ArkGrpcClient;
+use ark_client::error::ErrorContext;
 use ark_client::{Client, OfflineClient, Blockchain, ExplorerUtxo, SpendStatus};
 use ark_bdk_wallet::Wallet as BdkWallet;
 use ark_core::{ArkAddress, ArkTransaction, BoardingOutput};
@@ -18,11 +14,6 @@ use bitcoin::key::{Keypair, Secp256k1};
 use bitcoin::secp256k1::SecretKey;
 use bitcoin::{Address, Amount, Network, Transaction, Txid};
 use bitcoin::hashes::Hash;
-
-use rand::{rng, Rng};
-
-// global client instance
-static ARK_CLIENT: OnceCell<Arc<Mutex<Option<Client<EsploraBlockchain, ArkWallet>>>>> = OnceCell::new();
 
 // Blockchain impl for Esplora
 pub struct EsploraBlockchain {
@@ -219,7 +210,6 @@ pub struct ArkWallet {
     keypair: Keypair,
     secp: Secp256k1<bitcoin::secp256k1::All>,
     network: Network,
-    // boarding_outputs: Mutex<Vec<BoardingOutput>>,
     boarding_outputs: RwLock<Vec<BoardingOutput>>,
     secret_keys: Mutex<std::collections::HashMap<String, SecretKey>>,
 }
@@ -231,7 +221,6 @@ impl ArkWallet {
             keypair,
             secp,
             network,
-            // boarding_outputs: Mutex::new(Vec::new()),
             boarding_outputs: RwLock::new(Vec::new()),
             secret_keys: Mutex::new(std::collections::HashMap::new()),
         }
@@ -250,54 +239,35 @@ impl ark_client::wallet::BoardingWallet for ArkWallet {
         let sk = self.keypair.secret_key();
         let (owner_pk, _) = self.keypair.x_only_public_key();
         
-        let boarding_output = match BoardingOutput::new(&self.secp, server_pk, owner_pk, exit_delay, network) {
-            Ok(bo) => bo,
-            Err(e) => {
+        let boarding_output = BoardingOutput::new(&self.secp, server_pk, owner_pk, exit_delay, network)
+            .map_err(|e| {
                 tracing::error!("Error creating boarding output: {}", e);
-                return Err(ark_client::Error::wallet(anyhow!("Failed to create boarding output: {}", e)));
-            }
-        };
+                ark_client::Error::wallet(anyhow!("Failed to create boarding output: {}", e))
+            })?;
         
-        tokio::task::block_in_place(|| { // to run async func in sync context
-            // get a handle to current runtime
-            let rt = tokio::runtime::Handle::current();
-            
-            // run async lock operations on runtime
-            rt.block_on(async {
-                let mut secret_keys = self.secret_keys.lock().await;
-                secret_keys.insert(owner_pk.to_string(), sk);
-                
-                // let mut boarding_outputs = self.boarding_outputs.lock().await;
-                let mut boarding_outputs = self.boarding_outputs.write().await;
-                boarding_outputs.push(boarding_output.clone());
-            });
-        });
-        
+        self.secret_keys.lock().insert(owner_pk.to_string(), sk);
+        self.boarding_outputs.write().push(boarding_output.clone());
+       
         tracing::info!("Created boarding output with address: {}", boarding_output.address());
         Ok(boarding_output)
     }
 
 
-    // [FIX!!] b'coz cannot block the current thread from within a runtime when participating in rounds.
-    // fn get_boarding_outputs(&self) -> Result<Vec<BoardingOutput>, ark_client::Error> {
-    //     let boarding_outputs = self.boarding_outputs.blocking_lock();
-    //     Ok(boarding_outputs.clone())
-    // }
     fn get_boarding_outputs(&self) -> Result<Vec<BoardingOutput>, ark_client::Error> {
-        match self.boarding_outputs.try_read() {
-            Ok(guard) => Ok(guard.clone()),
-            Err(_) => Err(ark_client::Error::wallet(anyhow!("Failed to acquire read lock for boarding outputs")))
-        }
+        // doesn;t return Result, it just blocks
+        let boarding_outputs = self.boarding_outputs.read();
+        Ok(boarding_outputs.clone())
     }
 
     fn sign_for_pk(&self, pk: &bitcoin::XOnlyPublicKey, msg: &bitcoin::secp256k1::Message) -> Result<bitcoin::secp256k1::schnorr::Signature, ark_client::Error> {
-        let secret_keys = self.secret_keys.blocking_lock();
+        let secret_keys = self.secret_keys.lock();
         
         if let Some(sk) = secret_keys.get(&pk.to_string()) {
             let keypair = Keypair::from_secret_key(&self.secp, sk);
             let sig = self.secp.sign_schnorr_no_aux_rand(msg, &keypair);
             Ok(sig)
-        } else {
+        } 
+        else {
             tracing::error!("No secret key found for public key: {}", pk);
             Err(ark_client::Error::wallet(anyhow!("No secret key found for public key: {}", pk)))
         }
@@ -353,7 +323,7 @@ impl ark_client::wallet::OnchainWallet for ArkWallet {
 
 pub struct ArkGrpcService {
     grpc_client: Option<ArkGrpcClient>,
-    ark_client: Arc<Mutex<Option<Client<EsploraBlockchain, ArkWallet>>>>,
+    ark_client: Arc<Mutex<Option<Arc<Client<EsploraBlockchain, ArkWallet>>>>>
 }
 
 impl ArkGrpcService {
@@ -453,8 +423,8 @@ impl ArkGrpcService {
                     server_info.pk,
                     server_info.unilateral_exit_delay
                 );
-                let mut ark_client = self.ark_client.lock().await;
-                *ark_client = Some(client);
+                let mut ark_client = self.ark_client.lock();
+                *ark_client = Some(Arc::new(client));
                 Ok(())
             },
             Err(e) => {
@@ -508,8 +478,8 @@ impl ArkGrpcService {
                             match offline_client.connect().await {
                                 Ok(client) => {
                                     tracing::info!("Successfully initialized Ark client");
-                                    let mut ark_client = self.ark_client.lock().await;
-                                    *ark_client = Some(client);
+                                    let mut ark_client = self.ark_client.lock();
+                                    *ark_client = Some(Arc::new(client));
                                     return Ok(());
                                 },
                                 Err(e) => {
@@ -574,39 +544,34 @@ impl ArkGrpcService {
         Ok(keypair)
     }
 
-    pub async fn get_ark_client<'a>(&'a self) -> Result<tokio::sync::MutexGuard<'a, Option<Client<EsploraBlockchain, ArkWallet>>>> {
-        Ok(self.ark_client.lock().await)
+    pub fn get_ark_client(&self) -> parking_lot::MutexGuard<'_, Option<Arc<Client<EsploraBlockchain, ArkWallet>>>> {
+        self.ark_client.lock()
     }
 
     // update app state with client info
     pub async fn update_app_state(&self) -> Result<()> {
-        let client_opt = self.get_ark_client().await?;
+
+        // cloned arc to avoid lock handling
+        let client = {
+            let client_opt = self.get_ark_client();
+            client_opt.as_ref().map(|c| Arc::clone(c))
+        }; // Lock dropped here
         
-        if let Some(client) = client_opt.as_ref() {
-            // update app state with client info
-            let mut balance = crate::services::APP_STATE.balance.lock().await;
-            
-            // get on-chain balance
+        if let Some(client) = client {
+            // get offchain balance
             if let Ok(offchain_balance) = client.offchain_balance().await {
+                let mut balance = crate::services::APP_STATE.balance.lock().await;
                 balance.confirmed = offchain_balance.confirmed().to_sat();
                 balance.trusted_pending = offchain_balance.pending().to_sat();
-                balance.untrusted_pending = 0; // [TODO!!] functions not exposed
-                balance.immature = 0; // [TODO!!] functions not exposed
+                balance.untrusted_pending = 0;
+                balance.immature = 0;
                 balance.total = offchain_balance.total().to_sat();
             }
             
-            // get off-chain balance
-            if let Ok(offchain_balance) = client.offchain_balance().await {
-                // add off-chain balance to the total
-                balance.confirmed += offchain_balance.confirmed().to_sat();
-                balance.trusted_pending += offchain_balance.pending().to_sat();
-                balance.total += offchain_balance.total().to_sat();
-            }
-            
-            // update tx history
+            // get tx history
             if let Ok(history) = client.transaction_history().await {
                 let mut transactions = crate::services::APP_STATE.transactions.lock().await;
-                transactions.clear(); // clear existing tx
+                transactions.clear();
                 
                 for tx in history {
                     let tx_response = match tx {
@@ -651,69 +616,56 @@ impl ArkGrpcService {
     }
     
     pub async fn get_address(&self) -> Result<String> {
-        let client_opt = self.get_ark_client().await?;
+        let client = {
+            let client_opt = self.get_ark_client();
+            client_opt.as_ref().map(|c| Arc::clone(c))
+        };
         
-        if let Some(client) = client_opt.as_ref() {
+        if let Some(client) = client {
             match client.get_offchain_address() {
                 Ok((address, _)) => {
                     tracing::info!("Got real offchain address: {}", address);
-                    return Ok(address.to_string());
+                    Ok(address.to_string())
                 },
                 Err(e) => {
                     tracing::warn!("Failed to get offchain address: {}", e);
-                    // Fall through to fallback
+                    Err(anyhow::anyhow!("Failed to get offchain address: {}", e))
                 }
             }
+        } 
+        else {
+            Err(anyhow::anyhow!("Ark client not initialized"))
         }
-        
-        // fallback if client unavailable
-        tracing::warn!("Using fallback dummy address");
-        Ok("ark1dummy123456789".to_string())
     }
     
     pub async fn get_boarding_address(&self) -> Result<String> {
-        // get a clone of the mutex guard
-        let ark_client_mutex = self.ark_client.clone();
+        let client = {
+            let client_opt = self.get_ark_client();
+            client_opt.as_ref().map(|c| Arc::clone(c))
+        };
         
-        // spawn a blocking task that will acquire the lock and use the client
-        let address_result = tokio::task::spawn_blocking(move || {
-            // inside blocking task, we can safely use blocking_lock()
-            let guard = ark_client_mutex.blocking_lock();
-            
-            if let Some(client) = guard.as_ref() {
-                // call sync method
-                match client.get_boarding_address() {
-                    Ok(address) => Ok(address.to_string()),
-                    Err(e) => Err(anyhow::anyhow!("Failed to get boarding address: {}", e))
-                }
-            } else {
-                // fallback if client unavailable
-                Ok("bcrt1dummy123456789".to_string())
+        if let Some(client) = client {
+            match client.get_boarding_address() {
+                Ok(address) => Ok(address.to_string()),
+                Err(e) => Err(anyhow::anyhow!("Failed to get boarding address: {}", e))
             }
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("Join error: {}", e))??;
-        
-        Ok(address_result)
+        } 
+        else {
+            Err(anyhow::anyhow!("Ark client not initialized"))
+        }
     }
     
     pub async fn send_vtxo(&self, address_str: String, amount: u64) -> Result<String> {
-        let client_opt = self.get_ark_client().await?;
+        let client = {
+            let client_opt = self.get_ark_client();
+            client_opt.as_ref().map(|c| Arc::clone(c))
+        };
         
-        if let Some(client) = client_opt.as_ref() {
+        if let Some(client) = client {
             tracing::info!("Parsing address: {}", address_str);
             
-            let address = match ArkAddress::decode(&address_str) {
-                Ok(addr) => { 
-                    tracing::info!("Successfully parsed Ark address: {}", addr);
-                    addr
-                },
-                Err(e) => {
-                    tracing::error!("Failed to parse address '{}': {}", address_str, e);
-
-                    return Err(anyhow::anyhow!("parsing failed: {}", e));
-                }
-            };
+            let address = ArkAddress::decode(&address_str)
+                .map_err(|e| anyhow::anyhow!("Failed to parse address: {}", e))?;
             
             let amount = Amount::from_sat(amount);
             
@@ -721,23 +673,17 @@ impl ArkGrpcService {
             
             match client.send_vtxo(address, amount).await {
                 Ok(psbt) => {
-                    match psbt.extract_tx() {
-                        Ok(tx) => {
-                            let txid = tx.compute_txid();
-                            tracing::info!("Successfully sent VTXO with txid: {}", txid);
-                            
-                            // update app state after sending
-                            if let Err(e) = self.update_app_state().await {
-                                tracing::warn!("Failed to update app state after sending: {}", e);
-                            }
-                            
-                            Ok(txid.to_string())
-                        },
-                        Err(e) => {
-                            tracing::error!("Failed to extract transaction from PSBT: {}", e);
-                            Err(anyhow::anyhow!("Failed to extract transaction: {}", e))
-                        }
+                    let tx = psbt.extract_tx()
+                        .map_err(|e| anyhow::anyhow!("Failed to extract transaction: {}", e))?;
+                    let txid = tx.compute_txid();
+                    tracing::info!("Successfully sent VTXO with txid: {}", txid);
+                    
+                    // update app state after sending
+                    if let Err(e) = self.update_app_state().await {
+                        tracing::warn!("Failed to update app state after sending: {}", e);
                     }
+                    
+                    Ok(txid.to_string())
                 },
                 Err(e) => {
                     tracing::error!("Failed to send VTXO: {}", e);
@@ -746,17 +692,13 @@ impl ArkGrpcService {
             }
         } 
         else {
-            tracing::warn!("Ark client not available, using fallback");
-            
-            // fallback if client unavailable
-            let txid = format!("tx_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
-            Ok(txid)
+            Err(anyhow::anyhow!("Ark client not available"))
         }
     }
     
 
     pub async fn check_deposits(&self) -> Result<bool> {
-        let client_opt = self.get_ark_client().await?;
+        let client_opt = self.get_ark_client();
         
         if let Some(client) = client_opt.as_ref() {
             // random no for boarding process
@@ -779,7 +721,8 @@ impl ArkGrpcService {
                     if e.to_string().contains("No boarding outputs") {
                         tracing::info!("No deposits to board");
                         return Ok(false);
-                    } else {
+                    } 
+                    else {
                         tracing::error!("Error boarding deposits: {}", e);
                         return Err(anyhow::anyhow!("Error boarding deposits: {}", e));
                     }
@@ -805,7 +748,7 @@ impl ArkGrpcService {
     }
     
     pub async fn participate_in_round(&self) -> Result<Option<String>> {
-        let client_opt = self.get_ark_client().await?;
+        let client_opt = self.get_ark_client();
         
         if let Some(client) = client_opt.as_ref() {
             // random no. for round participation
@@ -831,7 +774,8 @@ impl ArkGrpcService {
                     if e.to_string().contains("No boarding outputs") && e.to_string().contains("No VTXOs") {
                         tracing::info!("No outputs to include in round");
                         return Ok(None);
-                    } else {
+                    } 
+                    else {
                         tracing::error!("Error participating in round: {}", e);
                         return Err(anyhow::anyhow!("Error participating in round: {}", e));
                     }
@@ -890,10 +834,13 @@ impl ArkGrpcService {
         
         let timeout_duration = std::time::Duration::from_secs(5);
         
-        let client_opt = self.get_ark_client().await?;
-        tracing::info!("ArkGrpcService: Acquired Ark client lock");
+        // check if client exists without holding lock
+        let has_client = {
+            let client_opt = self.get_ark_client();
+            client_opt.is_some()
+        };
         
-        if let Some(client) = client_opt.as_ref() {
+        if has_client {
             // update app state with a timeout
             let update_future = self.update_app_state();
             match tokio::time::timeout(timeout_duration, update_future).await {
@@ -908,7 +855,7 @@ impl ArkGrpcService {
                 }
             }
             
-            // get tx from app state
+            // Get transactions from app state
             let transactions = crate::services::APP_STATE.transactions.lock().await;
             tracing::info!("ArkGrpcService: Retrieved {} transactions from app state", transactions.len());
             
@@ -922,20 +869,11 @@ impl ArkGrpcService {
                 )
             }).collect::<Vec<_>>();
             
-            return Ok(history);
+            Ok(history)
+        } 
+        else {
+            Err(anyhow::anyhow!("Ark client not available"))
         }
-        
-        // fallback if client unavailable
-        tracing::info!("ArkGrpcService: Using fallback transaction data");
-        Ok(vec![
-            (
-                "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string(),
-                50000,
-                chrono::Utc::now().timestamp(),
-                "Boarding".to_string(),
-                true,
-            ),
-        ])
     }
     
     // [TODO!!]
@@ -959,7 +897,7 @@ impl ArkGrpcService {
     }
 
     pub async fn send_on_chain(&self, bitcoin_address: bitcoin::Address, amount: u64) -> Result<Txid> {
-        let client_opt = self.get_ark_client().await?;
+        let client_opt = self.get_ark_client();
         
         if let Some(client) = client_opt.as_ref() {
             tracing::info!("Sending {} sats on-chain to {}", amount, bitcoin_address);
@@ -984,7 +922,8 @@ impl ArkGrpcService {
                     Err(anyhow::anyhow!("Failed to send on-chain: {}", e))
                 }
             }
-        } else {
+        } 
+        else {
             tracing::warn!("Ark client not available, using fallback");
             // fallback if client unavailable (generate a random txid)
             let mut rng = rand::rng();

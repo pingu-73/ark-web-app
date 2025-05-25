@@ -2,8 +2,8 @@
 use crate::models::wallet::TransactionResponse;
 use crate::services::APP_STATE;
 use anyhow::{Result, Context};
-use bitcoin::opcodes::all;
-use std::collections::HashSet;
+
+use std::sync::Arc;
 
 pub async fn get_transaction_history() -> Result<Vec<TransactionResponse>> {
     tracing::info!("Service: Starting to fetch transaction history");
@@ -59,74 +59,73 @@ pub async fn participate_in_round() -> Result<Option<String>> {
     tracing::info!("Acquired gRPC client lock");
     let mut rng = bip39::rand::rngs::OsRng;
     
-    let client_opt = match grpc_client.get_ark_client().await {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::error!("Failed to get Ark client: {}", e);
-            return Err(anyhow::anyhow!("Failed to get Ark client: {}", e));
-        }
+    // Clone the Arc to avoid holding lock
+    let client = {
+        let client_opt = grpc_client.get_ark_client();
+        client_opt.as_ref().map(|c| Arc::clone(c))
     };
-    if client_opt.is_none() {
-        tracing::error!("Ark client not available");
-        return Err(anyhow::anyhow!("Ark client not available"));
-    }
-    let client = client_opt.as_ref().unwrap(); // !!! fix [.as_ref or .as_mut??]
-    tracing::info!("Got Ark client");
-
-    // try to board
-    tracing::info!("Attempting to board funds");
-    match client.board(&mut rng).await {
-        Ok(_) => {
-            tracing::info!("Successfully participated in round");
-            
-            // update app state after round participation
-            match grpc_client.update_app_state().await {
-                Ok(_) => tracing::info!("Successfully updated app state after round participation"),
-                Err(e) => tracing::warn!("Failed to update app state after round participation: {}", e),
-            }
-            
-            // recalculate balance
-            match APP_STATE.recalculate_balance().await {
-                Ok(_) => tracing::info!("Successfully recalculated balance after round participation"),
-                Err(e) => tracing::warn!("Failed to recalculate balance after round participation: {}", e),
-            }
-            
-            // return a placeholder txid for now
-            let txid = format!("round_{}", chrono::Utc::now().timestamp());
-            
-            // create a tx record
-            let tx = crate::models::wallet::TransactionResponse {
-                txid: txid.clone(),
-                amount: 0, // rounds don't change the total balance
-                timestamp: chrono::Utc::now().timestamp(),
-                type_name: "Round".to_string(),
-                is_settled: Some(true),
-            };
-            
-            // save to in-memory state
-            let mut transactions = APP_STATE.transactions.lock().await;
-            transactions.push(tx.clone());
-            drop(transactions);
-            
-            // save to db
-            match crate::services::transactions::save_transaction_to_db(&tx).await {
-                Ok(_) => tracing::info!("Successfully saved round transaction to database"),
-                Err(e) => tracing::error!("Error saving transaction to database: {}", e),
-            }
-            
-            Ok(Some(txid))
-        },
-        Err(e) => {
-            tracing::error!("Error participating in round: {}", e);
-            
-            if e.to_string().contains("No boarding outputs") && e.to_string().contains("No VTXOs") {
-                tracing::info!("No outputs to include in round");
-                return Ok(None);
-            } else {
-                tracing::error!("Error participating in round: {}", e);
-                return Err(anyhow::anyhow!("Error participating in round: {}", e));
+    
+    if let Some(client) = client {
+        tracing::info!("Got Ark client");
+        
+        // try to board
+        tracing::info!("Attempting to board funds");
+        match client.board(&mut rng).await {
+            Ok(_) => {
+                tracing::info!("Successfully participated in round");
+                
+                // update app state after round participation
+                match grpc_client.update_app_state().await {
+                    Ok(_) => tracing::info!("Successfully updated app state after round participation"),
+                    Err(e) => tracing::warn!("Failed to update app state after round participation: {}", e),
+                }
+                
+                // recalculate balance
+                match APP_STATE.recalculate_balance().await {
+                    Ok(_) => tracing::info!("Successfully recalculated balance after round participation"),
+                    Err(e) => tracing::warn!("Failed to recalculate balance after round participation: {}", e),
+                }
+                
+                // return a placeholder txid for now
+                let txid = format!("round_{}", chrono::Utc::now().timestamp());
+                
+                // create a tx record
+                let tx = crate::models::wallet::TransactionResponse {
+                    txid: txid.clone(),
+                    amount: 0, // rounds don't change the total balance
+                    timestamp: chrono::Utc::now().timestamp(),
+                    type_name: "Round".to_string(),
+                    is_settled: Some(true),
+                };
+                
+                // save to in-memory state
+                let mut transactions = APP_STATE.transactions.lock().await;
+                transactions.push(tx.clone());
+                drop(transactions);
+                
+                // save to db
+                match save_transaction_to_db(&tx).await {
+                    Ok(_) => tracing::info!("Successfully saved round transaction to database"),
+                    Err(e) => tracing::error!("Error saving transaction to database: {}", e),
+                }
+                
+                Ok(Some(txid))
+            },
+            Err(e) => {
+                if e.to_string().contains("No boarding outputs") && e.to_string().contains("No VTXOs") {
+                    tracing::info!("No outputs to include in round");
+                    Ok(None)
+                } 
+                else {
+                    tracing::error!("Error participating in round: {}", e);
+                    Err(anyhow::anyhow!("Error participating in round: {}", e))
+                }
             }
         }
+    } 
+    else {
+        tracing::error!("Ark client not available");
+        Err(anyhow::anyhow!("Ark client not available"))
     }
 }
 
