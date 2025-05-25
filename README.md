@@ -166,6 +166,7 @@ The frontend is structured as follows:
 
 6. **Dummy to real impl**
 - [x] make actual gRPC calls to the Ark server for balances, addresses, and tx history
+- [x] Receive via on-chain address
 - [ ] add signing and verification steps in Round participation
 
 7. **Security Fatures (Improvement from current impl)**
