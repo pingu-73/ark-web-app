@@ -276,15 +276,17 @@ impl ark_client::wallet::BoardingWallet for ArkWallet {
 
 impl ark_client::wallet::OnchainWallet for ArkWallet {
     fn get_onchain_address(&self) -> Result<Address, ark_client::Error> {
+        // P2WPKH address for on-chain operations
         let pubkey = self.keypair.public_key();
         let pubkey_bytes = pubkey.serialize();
         let wpkh = bitcoin::key::CompressedPublicKey::from_slice(&pubkey_bytes)
             .map_err(|e| ark_client::Error::wallet(anyhow!("Failed to create WPKH: {}", e)))?;
         let address = bitcoin::Address::p2wpkh(&wpkh, self.network);
         
-        tracing::info!("Generated onchain address: {}", address);
+        tracing::info!("Generated regular onchain address: {}", address);
         Ok(address)
     }
+    
 
     async fn sync(&self) -> Result<(), ark_client::Error> {
         // [TODO!!] implement a full sync
@@ -332,6 +334,10 @@ impl ArkGrpcService {
             grpc_client: None,
             ark_client: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub async fn get_onchain_address(&self) -> Result<String> {
+        self.get_boarding_address().await
     }
 
     pub async fn connect(&mut self, server_url: &str) -> Result<()> {
@@ -894,44 +900,5 @@ impl ArkGrpcService {
         };
         
         Ok(tx)
-    }
-
-    pub async fn send_on_chain(&self, bitcoin_address: bitcoin::Address, amount: u64) -> Result<Txid> {
-        let client_opt = self.get_ark_client();
-        
-        if let Some(client) = client_opt.as_ref() {
-            tracing::info!("Sending {} sats on-chain to {}", amount, bitcoin_address);
-            
-            // convert amount to Bitcoin Amount
-            let amount = Amount::from_sat(amount);
-            
-            // send on-chain
-            match client.send_on_chain(bitcoin_address, amount).await {
-                Ok(txid) => {
-                    tracing::info!("Successfully sent on-chain with txid: {}", txid);
-                    
-                    // update app state after sending
-                    if let Err(e) = self.update_app_state().await {
-                        tracing::warn!("Failed to update app state after sending: {}", e);
-                    }
-                    
-                    Ok(txid)
-                },
-                Err(e) => {
-                    tracing::error!("Failed to send on-chain: {}", e);
-                    Err(anyhow::anyhow!("Failed to send on-chain: {}", e))
-                }
-            }
-        } 
-        else {
-            tracing::warn!("Ark client not available, using fallback");
-            // fallback if client unavailable (generate a random txid)
-            let mut rng = rand::rng();
-            let random_bytes: [u8; 32] = rng.random();
-            let txid = Txid::from_slice(&random_bytes)
-                .map_err(|e| anyhow::anyhow!("Failed to create random txid: {}", e))?;
-            
-            Ok(txid)
-        }
     }
 }

@@ -91,8 +91,32 @@ The frontend is structured as follows:
 - `src/components/`: Reusable UI components
 - `src/api/`: API client
 
-# Wallet APIs
-### GET /api/wallet/info
+# Wallet
+## Architecture
+### Dual Address System
+The wallet uses separate addresses for different purposes:
+- **Boarding Address (P2TR)**: `bcrt1p...` - Used exclusively for Ark protocol operations
+- **On-Chain Address (P2WPKH)**: `bcrt1q...` - Used for regular Bitcoin transactions
+This separation avoids complex Taproot signing issues and provides clear operational boundaries.
+
+####  Why use seperate addresses and not use the same boarding address for onchain tx since it's also a taproot address ?
+- **Boarding addresses are 2-of-2 Taproot addresses** shared between user and ark
+- **They can receive Bitcoin normally** any Bitcoin sent to a boarding address is recognized by the ASP as entrance into the off-chain system
+- **They cannot be spent like normal UTXOs** the boarding address uses a 2-of-2 Taproot script structure i.e spending requires following:
+  - timeout-based unilateral spend (after csv dealy expires)
+  - cooperative spend (requires ark signature)
+
+**So if I use a boarding address as a "normal" wallet address for general Bitcoin operations, I risk trapping funds**
+
+## API's
+
+### `GET /api/wallet/boarding-address` 
+- Get Ark boarding address (P2TR)
+
+### `GET /api/wallet/onchain-address` 
+- Get regular Bitcoin address (P2WPKH)
+
+### `GET /api/wallet/info`
 - Returns information about the wallet, including network, server URL, and connection status.
 
 **Example:**
@@ -102,7 +126,61 @@ The frontend is structured as follows:
 {"network":"regtest","server_url":"http://localhost:7070","connected":true}
 ```
 
-### GET /api/wallet/available-balance
+### `GET /api/wallet/onchain-balance` 
+- Get on-chain Bitcoin balance
+
+**Example:**
+
+```
+curl http://localhost:3030/api/wallet/onchain-balance
+{"balance":1000000}
+
+```
+
+### `POST /api/wallet/estimate-fee` 
+- Estimate transaction fees
+
+**Example:**
+
+```
+❯ curl -X POST http://localhost:3030/api/wallet/estimate-fee \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "bcrt1p8qekkwku5lkfkcc5995440sa7m3ep54umspjdyq4d62srrd2v4mqkcrm25",
+    "amount": 50000
+  }' | jq
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100   129  100    21  100   108    505   2600 --:--:-- --:--:-- --:--:--  3146
+{
+  "estimated_fee": 160
+}
+
+```
+
+### `POST /api/wallet/send-onchain-payment` 
+- Send Bitcoin to any address
+
+**Example:**
+```
+❯ curl -X POST http://localhost:3030/api/wallet/send-onchain-payment \
+  -H "Content-Type: application/json" \
+  -d '{"address": "bcrt1q3ky83a28630z2cl5rsucc9cmnnlen4v2fqsd0k", "amount": 50000}'
+{"txid":"c5f10cdb9d8a1219eefebe970d6512ae7b329717a380308c3d15989d7d3cde9e"}
+
+~/Library
+❯ nigiri rpc generatetoaddress 1 $(nigiri rpc getnewaddress)
+[
+    "72c73630a1885a6361359f9906ab59556e3b33bfa34926e67a993f44d3d19612"
+]
+
+~/Library
+❯ curl http://localhost:3030/api/wallet/onchain-balance
+{"balance":949840}
+
+```
+
+### `GET /api/wallet/available-balance`
 - Returns the available (confirmed) balance that can be spent.
 
 **Example:**
@@ -111,7 +189,7 @@ The frontend is structured as follows:
 {"available":1100000}
 ```
 
-### GET /api/wallet/balance 
+### `GET /api/wallet/balance` 
 - Returns the wallet balance, including confirmed, pending, and total amounts.
 
 **Example:**
@@ -130,7 +208,7 @@ The frontend is structured as follows:
 
 ```
 
-### GET /api/transactions
+### `GET /api/transactions`
 - Returns the transaction history.
 
 **Example:** 
@@ -170,10 +248,16 @@ The frontend is structured as follows:
 - [ ] add signing and verification steps in Round participation
 
 7. **Security Fatures (Improvement from current impl)**
-- [ ] tx Broadcasting (currently not broadcasting txs to network)
-- [ ] bitcoin blockchain interaction for on-chain tx
-- [ ] UTXO management
+- [x] tx Broadcasting (currently not broadcasting txs to network)
+- [x] on-chain tx
+- [x] UTXO management
 - [x] Key Management
 - [ ] Signature Verification
 - [ ] Add cryptographic op for protocol's security
 - [ ] Implement taproot script with collaborative and exit paths
+
+
+### Limitations with On-chain tx:
+- **Transaction History**: Currently only displays Ark-related transactions. On-chain transaction integration is pending.
+- **Fee Estimation**: Uses hardcoded minimum fees (160 sats for regtest). Dynamic fee estimation will be implemented.
+- **Coin Selection**: Uses largest first algorithm.

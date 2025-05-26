@@ -32,18 +32,6 @@ pub async fn get_address() -> impl IntoResponse {
     }
 }
 
-pub async fn get_boarding_address() -> impl IntoResponse {
-    match wallet::get_boarding_address().await {
-        Ok(address) => (StatusCode::OK, Json(address)).into_response(),
-        Err(e) => {
-            tracing::error!("Error getting boarding address: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": e.to_string()
-            }))).into_response()
-        }
-    }
-}
-
 pub async fn send_vtxo(Json(request): Json<SendRequest>) -> impl IntoResponse {
     match wallet::send_vtxo(request.address, request.amount).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
@@ -94,17 +82,6 @@ pub async fn receive_vtxo(Json(request): Json<crate::models::wallet::ReceiveRequ
     }
 }
 
-pub async fn send_on_chain(Json(request): Json<SendRequest>) -> impl IntoResponse {
-    match wallet::send_on_chain(request.address, request.amount).await {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(e) => {
-            tracing::error!("Error sending on-chain: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": e.to_string()
-            }))).into_response()
-        }
-    }
-}
 
 pub async fn get_balance() -> impl IntoResponse {
     match crate::services::APP_STATE.recalculate_balance().await {
@@ -126,6 +103,72 @@ pub async fn debug_vtxos() -> impl IntoResponse {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(e) => {
             tracing::error!("Error debugging VTXOs: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}
+
+pub async fn get_boarding_address() -> impl IntoResponse {
+    match wallet::get_boarding_address().await {
+        Ok(address) => (StatusCode::OK, Json(address)).into_response(),
+        Err(e) => {
+            tracing::error!("Error getting boarding address: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}
+
+pub async fn get_onchain_address() -> impl IntoResponse {
+    match wallet::get_onchain_address().await {
+        Ok(address) => (StatusCode::OK, Json(serde_json::json!({
+            "address": address
+        }))).into_response(),
+        Err(e) => {
+            tracing::error!("Error getting onchain address: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}
+
+pub async fn send_onchain_payment(Json(request): Json<SendRequest>) -> impl IntoResponse {
+    match wallet::send_onchain_payment(request.address, request.amount).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            tracing::error!("Error sending on-chain payment: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}
+
+pub async fn get_onchain_balance() -> impl IntoResponse {
+    match wallet::get_onchain_balance().await {
+        Ok(balance) => (StatusCode::OK, Json(serde_json::json!({
+            "balance": balance
+        }))).into_response(),
+        Err(e) => {
+            tracing::error!("Error getting on-chain balance: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}
+
+pub async fn estimate_onchain_fee(Json(request): Json<SendRequest>) -> impl IntoResponse {
+    match wallet::estimate_onchain_fee(request.address, request.amount).await {
+        Ok(fee) => (StatusCode::OK, Json(serde_json::json!({
+            "estimated_fee": fee
+        }))).into_response(),
+        Err(e) => {
+            tracing::error!("Error estimating fee: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
                 "error": e.to_string()
             }))).into_response()

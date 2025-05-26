@@ -1,6 +1,7 @@
 #![allow(unused_imports, unused_variables, unused_assignments)]
 use crate::models::wallet::*;
 use crate::services::APP_STATE;
+use crate::services::onchain::OnChainPaymentService;
 use anyhow::{Result, Context};
 use ark_core::ArkAddress;
 use bitcoin::Amount;
@@ -164,83 +165,24 @@ pub async fn receive_vtxo(from_address: String, amount: u64) -> Result<Transacti
 }
 
 
-pub async fn send_on_chain(address: String, amount: u64) -> Result<SendResponse> {
-    let available_balance = get_available_balance().await?;
-    if available_balance < amount {
-        return Err(anyhow::anyhow!(
-            "Insufficient balance: have {} available, need {}",
-            available_balance, amount
-        ));
-    }
+pub async fn get_onchain_address() -> Result<String> {
+    let (keypair, _) = APP_STATE.key_manager.load_or_create_wallet()?;
     
-    let grpc_client = APP_STATE.grpc_client.lock().await;
-    
-    tracing::info!("Attempting to send {} satoshis on-chain to address: {}", amount, address);
-    
-    // validate Bitcoin address
-    let bitcoin_address = match bitcoin::Address::from_str(&address) {
-        Ok(addr) => {
-            let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".to_string()).as_str() {
-                "mainnet" => bitcoin::Network::Bitcoin,
-                "testnet" => bitcoin::Network::Testnet,
-                "signet" => bitcoin::Network::Signet,
-                _ => bitcoin::Network::Regtest,
-            };
-            
-            match addr.clone().require_network(network) {
-                Ok(addr) => {
-                    tracing::info!("Successfully parsed Bitcoin address for network: {:?}", network);
-                    addr
-                },
-                Err(_) => {
-                    // Try to assume the address without network check
-                    tracing::info!("Address network mismatch, using address as-is");
-                    addr.assume_checked()
-                }
-            }
-        },
-        Err(e) => {
-            tracing::error!("Failed to parse Bitcoin address: {}", e);
-            return Err(anyhow::anyhow!("Invalid Bitcoin address: {}", e));
-        }
+    let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".to_string()).as_str() {
+        "mainnet" => bitcoin::Network::Bitcoin,
+        "testnet" => bitcoin::Network::Testnet,
+        "signet" => bitcoin::Network::Signet,
+        _ => bitcoin::Network::Regtest,
     };
-    
-    // send on-chain
-    match grpc_client.send_on_chain(bitcoin_address, amount).await {
-        Ok(txid) => {
-            tracing::info!("Successfully sent on-chain with txid: {}", txid);
-            
-            // create tx record
-            let tx = TransactionResponse {
-                txid: txid.to_string(),
-                amount: -(amount as i64),
-                timestamp: chrono::Utc::now().timestamp(),
-                type_name: "OnChain".to_string(),
-                is_settled: Some(false),
-            };
-            
-            // save to in-memory state
-            let mut transactions = APP_STATE.transactions.lock().await;
-            transactions.push(tx.clone());
-            drop(transactions);
-            
-            // save to db
-            if let Err(e) = crate::services::transactions::save_transaction_to_db(&tx).await {
-                tracing::error!("Error saving transaction to database: {}", e);
-            }
-            
-            // recalculate balance
-            APP_STATE.recalculate_balance().await?;
-            
-            Ok(SendResponse { txid: txid.to_string() })
-        },
-        Err(e) => {
-            tracing::error!("Failed to send on-chain: {}", e);
-            Err(anyhow::anyhow!("Failed to send on-chain: {}", e))
-        }
-    }
-}
 
+    let pubkey = keypair.public_key();
+    let pubkey_bytes = pubkey.serialize();
+    let wpkh = bitcoin::key::CompressedPublicKey::from_slice(&pubkey_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to create WPKH: {}", e))?;
+    let address = bitcoin::Address::p2wpkh(&wpkh, network);
+
+    Ok(address.to_string())
+}
 
 pub async fn debug_vtxos() -> Result<serde_json::Value> {
     let grpc_client = APP_STATE.grpc_client.lock().await;
@@ -284,4 +226,82 @@ pub async fn debug_vtxos() -> Result<serde_json::Value> {
             "error": "Ark client not available"
         }))
     }
+}
+
+
+pub async fn send_onchain_payment(address: String, amount: u64) -> Result<SendResponse> {
+    let bitcoin_address = match bitcoin::Address::from_str(&address) {
+        Ok(addr) => {
+            let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".to_string()).as_str() {
+                "mainnet" => bitcoin::Network::Bitcoin,
+                "testnet" => bitcoin::Network::Testnet,
+                "signet" => bitcoin::Network::Signet,
+                _ => bitcoin::Network::Regtest,
+            };
+            
+            match addr.clone().require_network(network) {
+                Ok(addr) => addr,
+                Err(_) => addr.assume_checked()
+            }
+        },
+        Err(e) => {
+            return Err(anyhow::anyhow!("Invalid Bitcoin address: {}", e));
+        }
+    };
+
+    // create blockchain instance
+    let esplora_url = std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(&esplora_url)?);
+    
+    // create payment service
+    let payment_service = OnChainPaymentService::new(blockchain);
+    
+    // send payment
+    let amount = bitcoin::Amount::from_sat(amount);
+    let txid = payment_service.send_payment(bitcoin_address, amount, None).await?;
+    
+    // tx record
+    let tx = TransactionResponse {
+        txid: txid.to_string(),
+        amount: -(amount.to_sat() as i64),
+        timestamp: chrono::Utc::now().timestamp(),
+        type_name: "OnChain".to_string(),
+        is_settled: Some(false),
+    };
+    
+    // save to in-memory state
+    let mut transactions = APP_STATE.transactions.lock().await;
+    transactions.push(tx.clone());
+    drop(transactions);
+    
+    // save to db
+    if let Err(e) = crate::services::transactions::save_transaction_to_db(&tx).await {
+        tracing::error!("Error saving transaction to database: {}", e);
+    }
+    
+    Ok(SendResponse { txid: txid.to_string() })
+}
+
+pub async fn get_onchain_balance() -> Result<u64> {
+    let esplora_url = std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(&esplora_url)?);
+    
+    let payment_service = OnChainPaymentService::new(blockchain);
+    let balance = payment_service.get_balance().await?;
+    
+    Ok(balance.to_sat())
+}
+
+pub async fn estimate_onchain_fee(address: String, amount: u64) -> Result<u64> {
+    let bitcoin_address = bitcoin::Address::from_str(&address)?
+        .assume_checked();
+    
+    let esplora_url = std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(&esplora_url)?);
+    
+    let payment_service = OnChainPaymentService::new(blockchain);
+    let amount = bitcoin::Amount::from_sat(amount);
+    let fee = payment_service.estimate_fee(bitcoin_address, amount).await?;
+    
+    Ok(fee.to_sat())
 }

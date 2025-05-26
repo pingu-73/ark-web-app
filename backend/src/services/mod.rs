@@ -2,6 +2,7 @@
 pub mod wallet;
 pub mod transactions;
 pub mod ark_grpc;
+pub mod onchain;
 
 use anyhow::Result;
 use std::sync::Arc;
