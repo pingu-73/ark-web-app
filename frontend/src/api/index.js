@@ -17,10 +17,11 @@ export const getWalletBalance = async () => {
   return response.json();
 };
 
-export const getAddress = async () => {
+// Address APIs
+export const getArkAddress = async () => {
   const response = await fetch(`${API_URL}/wallet/address`);
   if (!response.ok) {
-    throw new Error(`Error fetching address: ${response.statusText}`);
+    throw new Error(`Error fetching Ark address: ${response.statusText}`);
   }
   return response.json();
 };
@@ -33,6 +34,32 @@ export const getBoardingAddress = async () => {
   return response.json();
 };
 
+export const getOnchainAddress = async () => {
+  const response = await fetch(`${API_URL}/wallet/onchain-address`);
+  if (!response.ok) {
+    throw new Error(`Error fetching onchain address: ${response.statusText}`);
+  }
+  return response.json();
+};
+
+// Balance APIs
+export const getAvailableBalance = async () => {
+  const response = await fetch(`${API_URL}/wallet/available-balance`);
+  if (!response.ok) {
+    throw new Error(`Error fetching available balance: ${response.statusText}`);
+  }
+  return response.json();
+};
+
+export const getOnchainBalance = async () => {
+  const response = await fetch(`${API_URL}/wallet/onchain-balance`);
+  if (!response.ok) {
+    throw new Error(`Error fetching onchain balance: ${response.statusText}`);
+  }
+  return response.json();
+};
+
+// Send APIs
 export const sendVtxo = async (address, amount) => {
   const response = await fetch(`${API_URL}/wallet/send`, {
     method: 'POST',
@@ -43,6 +70,35 @@ export const sendVtxo = async (address, amount) => {
   });
   if (!response.ok) {
     throw new Error(`Error sending VTXO: ${response.statusText}`);
+  }
+  return response.json();
+};
+
+export const sendOnchainPayment = async (address, amount) => {
+  const response = await fetch(`${API_URL}/wallet/send-onchain-payment`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ address, amount }),
+  });
+  if (!response.ok) {
+    throw new Error(`Error sending onchain payment: ${response.statusText}`);
+  }
+  return response.json();
+};
+
+// Fee estimation
+export const estimateFee = async (address, amount) => {
+  const response = await fetch(`${API_URL}/wallet/estimate-fee`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ address, amount }),
+  });
+  if (!response.ok) {
+    throw new Error(`Error estimating fee: ${response.statusText}`);
   }
   return response.json();
 };

@@ -7,20 +7,32 @@ import {
   Box, 
   Button,
   StatusIndicator,
-  Spinner
+  Spinner,
+  Tabs
 } from '@cloudscape-design/components';
+import { 
+  getWalletInfo, 
+  getWalletBalance, 
+  getArkAddress, 
+  getBoardingAddress, 
+  getOnchainAddress,
+  getAvailableBalance,
+  getOnchainBalance,
+  participateInRound 
+} from '../api';
 
 function Dashboard() {
   const [info, setInfo] = useState(null);
   const [balance, setBalance] = useState(null);
-  const [address, setAddress] = useState('');
+  const [arkAddress, setArkAddress] = useState('');
   const [boardingAddress, setBoardingAddress] = useState('');
+  const [onchainAddress, setOnchainAddress] = useState('');
+  const [availableBalance, setAvailableBalance] = useState(0);
+  const [onchainBalance, setOnchainBalance] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [roundResult, setRoundResult] = useState(null);
   const [roundLoading, setRoundLoading] = useState(false);
-
-  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3030/api';
 
   useEffect(() => {
     fetchData();
@@ -30,30 +42,32 @@ function Dashboard() {
     try {
       setLoading(true);
       
-      // Fetch wallet info
-      const infoResponse = await fetch(`${API_URL}/wallet/info`);
-      if (!infoResponse.ok) throw new Error(`Error fetching wallet info: ${infoResponse.statusText}`);
-      const infoData = await infoResponse.json();
-      
-      // Fetch balance
-      const balanceResponse = await fetch(`${API_URL}/wallet/balance`);
-      if (!balanceResponse.ok) throw new Error(`Error fetching balance: ${balanceResponse.statusText}`);
-      const balanceData = await balanceResponse.json();
-      
-      // Fetch address
-      const addressResponse = await fetch(`${API_URL}/wallet/address`);
-      if (!addressResponse.ok) throw new Error(`Error fetching address: ${addressResponse.statusText}`);
-      const addressData = await addressResponse.json();
-      
-      // Fetch boarding address
-      const boardingResponse = await fetch(`${API_URL}/wallet/boarding-address`);
-      if (!boardingResponse.ok) throw new Error(`Error fetching boarding address: ${boardingResponse.statusText}`);
-      const boardingData = await boardingResponse.json();
+      // Fetch all data in parallel
+      const [
+        infoData,
+        balanceData,
+        arkAddressData,
+        boardingData,
+        onchainAddressData,
+        availableBalanceData,
+        onchainBalanceData
+      ] = await Promise.all([
+        getWalletInfo(),
+        getWalletBalance(),
+        getArkAddress(),
+        getBoardingAddress(),
+        getOnchainAddress(),
+        getAvailableBalance(),
+        getOnchainBalance()
+      ]);
       
       setInfo(infoData);
       setBalance(balanceData);
-      setAddress(addressData.address);
+      setArkAddress(arkAddressData.address);
       setBoardingAddress(boardingData.address);
+      setOnchainAddress(onchainAddressData.address);
+      setAvailableBalance(availableBalanceData.available);
+      setOnchainBalance(onchainBalanceData.balance);
       setError(null);
     } catch (err) {
       setError('Failed to load wallet data: ' + err.message);
@@ -65,19 +79,19 @@ function Dashboard() {
   const handleParticipateInRound = async () => {
     try {
       setRoundLoading(true);
-      const response = await fetch(`${API_URL}/round/participate`, {
-        method: 'POST',
-      });
-      
-      if (!response.ok) throw new Error(`Error participating in round: ${response.statusText}`);
-      
-      const result = await response.json();
+      const result = await participateInRound();
       setRoundResult(result);
+      // Refresh balances after round participation
+      await fetchData();
     } catch (err) {
       setError('Failed to participate in round: ' + err.message);
     } finally {
       setRoundLoading(false);
     }
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
   };
 
   if (loading) {
@@ -106,8 +120,9 @@ function Dashboard() {
 
         <Grid
           gridDefinition={[
-            { colspan: { default: 12, xxs: 6 } },
-            { colspan: { default: 12, xxs: 6 } }
+            { colspan: { default: 12, xxs: 4 } },
+            { colspan: { default: 12, xxs: 4 } },
+            { colspan: { default: 12, xxs: 4 } }
           ]}
         >
           {/* Wallet Info */}
@@ -136,15 +151,19 @@ function Dashboard() {
             </SpaceBetween>
           </Container>
 
-          {/* Balance */}
+          {/* Ark Balance */}
           <Container
             header={
               <Header variant="h2">
-                Balance
+                Ark Balance
               </Header>
             }
           >
             <SpaceBetween size="m">
+              <div>
+                <Box variant="awsui-key-label">Available</Box>
+                <div>{availableBalance} sats</div>
+              </div>
               <div>
                 <Box variant="awsui-key-label">Confirmed</Box>
                 <div>{balance?.confirmed} sats</div>
@@ -153,10 +172,26 @@ function Dashboard() {
                 <Box variant="awsui-key-label">Pending</Box>
                 <div>{balance?.trusted_pending + balance?.untrusted_pending} sats</div>
               </div>
+            </SpaceBetween>
+          </Container>
+
+          {/* On-Chain Balance */}
+          <Container
+            header={
+              <Header variant="h2">
+                On-Chain Balance
+              </Header>
+            }
+          >
+            <SpaceBetween size="m">
               <div>
-                <Box variant="awsui-key-label">Total</Box>
-                <div>{balance?.total} sats</div>
+                <Box variant="awsui-key-label">Available</Box>
+                <div>{onchainBalance} sats</div>
               </div>
+              {/* <div>
+                <Box variant="awsui-key-label">Total</Box>
+                <div>{onchainBalance} sats</div>
+              </div> */}
             </SpaceBetween>
           </Container>
         </Grid>
@@ -169,33 +204,64 @@ function Dashboard() {
             </Header>
           }
         >
-          <SpaceBetween size="l">
-            <div>
-              <Header variant="h3">Ark Address (for off-chain transactions)</Header>
-              <Box variant="code">{address}</Box>
-              <Button
-                iconName="copy"
-                onClick={() => {
-                  navigator.clipboard.writeText(address);
-                }}
-              >
-                Copy
-              </Button>
-            </div>
-            
-            <div>
-              <Header variant="h3">Boarding Address (for on-chain deposits)</Header>
-              <Box variant="code">{boardingAddress}</Box>
-              <Button
-                iconName="copy"
-                onClick={() => {
-                  navigator.clipboard.writeText(boardingAddress);
-                }}
-              >
-                Copy
-              </Button>
-            </div>
-          </SpaceBetween>
+          <Tabs
+            tabs={[
+              {
+                label: "Ark Address",
+                id: "ark",
+                content: (
+                  <SpaceBetween size="m">
+                    <div>
+                      <Header variant="h4">For receiving VTXOs (off-chain)</Header>
+                      <Box variant="code">{arkAddress}</Box>
+                      <Button
+                        iconName="copy"
+                        onClick={() => copyToClipboard(arkAddress)}
+                      >
+                        Copy
+                      </Button>
+                    </div>
+                  </SpaceBetween>
+                )
+              },
+              {
+                label: "Boarding Address", 
+                id: "boarding",
+                content: (
+                  <SpaceBetween size="m">
+                    <div>
+                      <Header variant="h4">For deposits into Ark (P2TR)</Header>
+                      <Box variant="code">{boardingAddress}</Box>
+                      <Button
+                        iconName="copy"
+                        onClick={() => copyToClipboard(boardingAddress)}
+                      >
+                        Copy
+                      </Button>
+                    </div>
+                  </SpaceBetween>
+                )
+              },
+              {
+                label: "Bitcoin Address",
+                id: "onchain", 
+                content: (
+                  <SpaceBetween size="m">
+                    <div>
+                      <Header variant="h4">For regular Bitcoin transactions (P2WPKH)</Header>
+                      <Box variant="code">{onchainAddress}</Box>
+                      <Button
+                        iconName="copy"
+                        onClick={() => copyToClipboard(onchainAddress)}
+                      >
+                        Copy
+                      </Button>
+                    </div>
+                  </SpaceBetween>
+                )
+              }
+            ]}
+          />
         </Container>
 
         {/* Round Participation */}

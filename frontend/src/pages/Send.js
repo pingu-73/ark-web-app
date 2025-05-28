@@ -6,17 +6,40 @@ import {
   FormField,
   Input,
   Button,
-  Alert
+  Alert,
+  Tabs,
+  Select,
+  Box
 } from '@cloudscape-design/components';
+import { sendVtxo, sendOnchainPayment, estimateFee } from '../api';
 
 function Send() {
+  const [activeTab, setActiveTab] = useState('vtxo');
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
+  const [estimatedFee, setEstimatedFee] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [estimatingFee, setEstimatingFee] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
 
-  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3030/api';
+  const handleEstimateFee = async () => {
+    if (!address || !amount) {
+      setError('Please fill in address and amount first');
+      return;
+    }
+
+    try {
+      setEstimatingFee(true);
+      const amountSats = parseInt(amount, 10);
+      const feeData = await estimateFee(address, amountSats);
+      setEstimatedFee(feeData.estimated_fee);
+    } catch (err) {
+      setError('Failed to estimate fee: ' + err.message);
+    } finally {
+      setEstimatingFee(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -36,24 +59,19 @@ function Send() {
         throw new Error('Amount must be a positive number');
       }
       
-      const response = await fetch(`${API_URL}/wallet/send`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ address, amount: amountSats }),
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Error sending transaction: ${response.statusText}`);
+      let result;
+      if (activeTab === 'vtxo') {
+        result = await sendVtxo(address, amountSats);
+        setSuccess(`VTXO sent successfully! TXID: ${result.txid}`);
+      } else {
+        result = await sendOnchainPayment(address, amountSats);
+        setSuccess(`On-chain payment sent successfully! TXID: ${result.txid}`);
       }
-      
-      const result = await response.json();
-      setSuccess(`Transaction sent successfully! TXID: ${result.txid}`);
       
       // Clear form
       setAddress('');
       setAmount('');
+      setEstimatedFee(null);
     } catch (err) {
       setError('Failed to send transaction: ' + err.message);
     } finally {
@@ -66,8 +84,9 @@ function Send() {
       <SpaceBetween size="l">
         <Header
           variant="h1"
+          description="Send Bitcoin using Ark or regular on-chain transactions"
         >
-          Send VTXOs
+          Send Bitcoin
         </Header>
         
         {error && (
@@ -82,42 +101,125 @@ function Send() {
           </Alert>
         )}
         
-        <form onSubmit={handleSubmit}>
-          <SpaceBetween size="l">
-            <FormField
-              label="Recipient Address"
-              description="Enter the Ark address of the recipient"
-            >
-              <Input
-                value={address}
-                onChange={({ detail }) => setAddress(detail.value)}
-                placeholder="Enter Ark address"
-                disabled={loading}
-              />
-            </FormField>
-            
-            <FormField
-              label="Amount (sats)"
-              description="Enter the amount in satoshis"
-            >
-              <Input
-                value={amount}
-                onChange={({ detail }) => setAmount(detail.value)}
-                placeholder="Enter amount in satoshis"
-                type="number"
-                disabled={loading}
-              />
-            </FormField>
-            
-            <Button
-              variant="primary"
-              formAction="submit"
-              loading={loading}
-            >
-              Send
-            </Button>
-          </SpaceBetween>
-        </form>
+        <Tabs
+          activeTabId={activeTab}
+          onChange={({ detail }) => {
+            setActiveTab(detail.activeTabId);
+            setError(null);
+            setSuccess(null);
+            setEstimatedFee(null);
+          }}
+          tabs={[
+            {
+              label: "Send VTXO (Off-chain)",
+              id: "vtxo",
+              content: (
+                <form onSubmit={handleSubmit}>
+                  <SpaceBetween size="l">
+                    <Alert type="info">
+                      Send VTXOs instantly to other Ark users with minimal fees.
+                    </Alert>
+                    
+                    <FormField
+                      label="Recipient Ark Address"
+                      description="Enter the Ark address of the recipient"
+                    >
+                      <Input
+                        value={address}
+                        onChange={({ detail }) => setAddress(detail.value)}
+                        placeholder="Enter Ark address (ark1...)"
+                        disabled={loading}
+                      />
+                    </FormField>
+                    
+                    <FormField
+                      label="Amount (sats)"
+                      description="Enter the amount in satoshis"
+                    >
+                      <Input
+                        value={amount}
+                        onChange={({ detail }) => setAmount(detail.value)}
+                        placeholder="Enter amount in satoshis"
+                        type="number"
+                        disabled={loading}
+                      />
+                    </FormField>
+                    
+                    <Button
+                      variant="primary"
+                      formAction="submit"
+                      loading={loading}
+                    >
+                      Send VTXO
+                    </Button>
+                  </SpaceBetween>
+                </form>
+              )
+            },
+            {
+              label: "Send On-chain",
+              id: "onchain",
+              content: (
+                <form onSubmit={handleSubmit}>
+                  <SpaceBetween size="l">
+                    <Alert type="info">
+                      Send regular Bitcoin transactions to any Bitcoin address.
+                    </Alert>
+                    
+                    <FormField
+                      label="Recipient Bitcoin Address"
+                      description="Enter any valid Bitcoin address"
+                    >
+                      <Input
+                        value={address}
+                        onChange={({ detail }) => setAddress(detail.value)}
+                        placeholder="Enter Bitcoin address (bc1... or bcrt1...)"
+                        disabled={loading}
+                      />
+                    </FormField>
+                    
+                    <FormField
+                      label="Amount (sats)"
+                      description="Enter the amount in satoshis"
+                    >
+                      <Input
+                        value={amount}
+                        onChange={({ detail }) => setAmount(detail.value)}
+                        placeholder="Enter amount in satoshis"
+                        type="number"
+                        disabled={loading}
+                      />
+                    </FormField>
+                    
+                    <SpaceBetween size="m" direction="horizontal">
+                      <Button
+                        onClick={handleEstimateFee}
+                        loading={estimatingFee}
+                        disabled={!address || !amount}
+                      >
+                        Estimate Fee
+                      </Button>
+                      
+                      {estimatedFee && (
+                        <Box>
+                          <strong>Estimated Fee: {estimatedFee} sats</strong>
+                        </Box>
+                      )}
+                    </SpaceBetween>
+                    
+                    <Button
+                      variant="primary"
+                      formAction="submit"
+                      loading={loading}
+                    >
+                      Send On-chain
+                    </Button>
+                  </SpaceBetween>
+                </form>
+              )
+            }
+          ]}
+        />
       </SpaceBetween>
     </Container>
   );

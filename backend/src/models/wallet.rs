@@ -32,7 +32,7 @@ pub struct TransactionResponse {
     pub is_settled: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SendRequest {
     pub address: String,
     pub amount: u64,
