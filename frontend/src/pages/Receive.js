@@ -1,92 +1,78 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Container,
   Header,
   SpaceBetween,
-  FormField,
-  Input,
   Button,
-  Alert,
   Box,
-  ColumnLayout
+  ColumnLayout,
+  Tabs,
+  Alert
 } from '@cloudscape-design/components';
+import { 
+  getArkAddress, 
+  getBoardingAddress, 
+  getOnchainAddress 
+} from '../api';
 
 function Receive() {
-  const [amount, setAmount] = useState('');
-  const [fromAddress, setFromAddress] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [arkAddress, setArkAddress] = useState('');
+  const [boardingAddress, setBoardingAddress] = useState('');
+  const [onchainAddress, setOnchainAddress] = useState('');
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [success, setSuccess] = useState(null);
-  const [txDetails, setTxDetails] = useState(null);
 
-  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3030/api';
+  useEffect(() => {
+    fetchAddresses();
+  }, []);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    // Validation
-    if (!fromAddress) {
-      setError('Please enter a sender address');
-      return;
-    }
-    
-    if (!amount) {
-      setError('Please enter an amount');
-      return;
-    }
-    
-    const amountSats = parseInt(amount, 10);
-    if (isNaN(amountSats) || amountSats <= 0) {
-      setError('Amount must be a positive number');
-      return;
-    }
-
+  const fetchAddresses = async () => {
     try {
       setLoading(true);
+      
+      const [arkData, boardingData, onchainData] = await Promise.all([
+        getArkAddress(),
+        getBoardingAddress(),
+        getOnchainAddress()
+      ]);
+      
+      setArkAddress(arkData.address);
+      setBoardingAddress(boardingData.address);
+      setOnchainAddress(onchainData.address);
       setError(null);
-      setSuccess(null);
-      setTxDetails(null);
-      
-      console.log(`Receiving ${amountSats} sats from ${fromAddress}`);
-      
-      const response = await fetch(`${API_URL}/wallet/receive`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ from_address: fromAddress, amount: amountSats }),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `Error receiving VTXO: ${response.statusText}`);
-      }
-      
-      const result = await response.json();
-      console.log('Received VTXO:', result);
-      
-      setSuccess(`VTXO received successfully!`);
-      setTxDetails(result);
-      
-      // Clear form
-      setFromAddress('');
-      setAmount('');
     } catch (err) {
-      console.error('Receive error:', err);
-      setError('Failed to receive VTXO: ' + err.message);
+      setError('Failed to load addresses: ' + err.message);
     } finally {
       setLoading(false);
     }
   };
+
+  const copyToClipboard = (text, type) => {
+    navigator.clipboard.writeText(text);
+    // You could add a toast notification here
+  };
+
+  const generateQRCode = (address) => {
+    // You could integrate a QR code library here
+    return `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${address}`;
+  };
+
+  if (loading) {
+    return (
+      <Container>
+        <Header variant="h1">Loading addresses...</Header>
+      </Container>
+    );
+  }
 
   return (
     <Container>
       <SpaceBetween size="l">
         <Header
           variant="h1"
-          description="Receive Bitcoin using the Ark protocol"
+          description="Share these addresses to receive Bitcoin"
         >
-          Receive VTXOs
+          Receive Bitcoin
         </Header>
         
         {error && (
@@ -95,102 +81,150 @@ function Receive() {
           </Alert>
         )}
         
-        {success && (
-          <Alert type="success" header="Success">
-            {success}
-          </Alert>
-        )}
-        
-        <form onSubmit={handleSubmit}>
-          <SpaceBetween size="l">
-            <FormField
-              label="Sender Address"
-              description="Enter the Ark address of the sender"
-              errorText={!fromAddress && error?.includes('sender') ? 'Sender address is required' : undefined}
-            >
-              <Input
-                value={fromAddress}
-                onChange={({ detail }) => setFromAddress(detail.value)}
-                placeholder="Enter Ark address (e.g., ark1...)"
-                disabled={loading}
-              />
-            </FormField>
-            
-            <FormField
-              label="Amount (sats)"
-              description="Enter the amount in satoshis"
-              errorText={!amount && error?.includes('amount') ? 'Amount is required' : undefined}
-            >
-              <Input
-                value={amount}
-                onChange={({ detail }) => setAmount(detail.value)}
-                placeholder="Enter amount in satoshis (e.g., 10000)"
-                type="number"
-                disabled={loading}
-              />
-            </FormField>
-            
-            <Button
-              variant="primary"
-              formAction="submit"
-              loading={loading}
-            >
-              Receive
-            </Button>
-          </SpaceBetween>
-        </form>
-        
-        {txDetails && (
-          <Container
-            header={
-              <Header variant="h2">
-                Transaction Details
-              </Header>
+        <Tabs
+          tabs={[
+            {
+              label: "Ark Address (VTXOs)",
+              id: "ark",
+              content: (
+                <Container>
+                  <SpaceBetween size="l">
+                    <Alert type="info">
+                      Use this address to receive instant, low-fee VTXO payments from other Ark users.
+                    </Alert>
+                    
+                    <ColumnLayout columns={2}>
+                      <div>
+                        <Header variant="h3">Your Ark Address</Header>
+                        <Box variant="code" fontSize="body-s">
+                          {arkAddress}
+                        </Box>
+                        <SpaceBetween size="s" direction="horizontal">
+                          <Button
+                            iconName="copy"
+                            onClick={() => copyToClipboard(arkAddress, 'Ark')}
+                          >
+                            Copy Address
+                          </Button>
+                        </SpaceBetween>
+                      </div>
+                      
+                      <div>
+                        <Header variant="h3">QR Code</Header>
+                        <img 
+                          src={generateQRCode(arkAddress)} 
+                          alt="Ark Address QR Code"
+                          style={{ maxWidth: '200px' }}
+                        />
+                      </div>
+                    </ColumnLayout>
+                  </SpaceBetween>
+                </Container>
+              )
+            },
+            {
+              label: "Boarding Address (Deposits)",
+              id: "boarding",
+              content: (
+                <Container>
+                  <SpaceBetween size="l">
+                    <Alert type="warning">
+                      Use this address to deposit Bitcoin into the Ark system. Funds sent here will be available for Ark operations after participating in a round.
+                    </Alert>
+                    
+                    <ColumnLayout columns={2}>
+                      <div>
+                        <Header variant="h3">Your Boarding Address</Header>
+                        <Box variant="code" fontSize="body-s">
+                          {boardingAddress}
+                        </Box>
+                        <SpaceBetween size="s" direction="horizontal">
+                          <Button
+                            iconName="copy"
+                            onClick={() => copyToClipboard(boardingAddress, 'Boarding')}
+                          >
+                            Copy Address
+                          </Button>
+                        </SpaceBetween>
+                      </div>
+                      
+                      <div>
+                        <Header variant="h3">QR Code</Header>
+                        <img 
+                          src={generateQRCode(boardingAddress)} 
+                          alt="Boarding Address QR Code"
+                          style={{ maxWidth: '200px' }}
+                        />
+                      </div>
+                    </ColumnLayout>
+                  </SpaceBetween>
+                </Container>
+              )
+            },
+            {
+              label: "Bitcoin Address (On-chain)",
+              id: "onchain",
+              content: (
+                <Container>
+                  <SpaceBetween size="l">
+                    <Alert type="info">
+                      Use this address to receive regular Bitcoin transactions. These funds can be used for on-chain payments.
+                    </Alert>
+                    
+                    <ColumnLayout columns={2}>
+                      <div>
+                        <Header variant="h3">Your Bitcoin Address</Header>
+                        <Box variant="code" fontSize="body-s">
+                          {onchainAddress}
+                        </Box>
+                        <SpaceBetween size="s" direction="horizontal">
+                          <Button
+                            iconName="copy"
+                            onClick={() => copyToClipboard(onchainAddress, 'Bitcoin')}
+                          >
+                            Copy Address
+                          </Button>
+                        </SpaceBetween>
+                      </div>
+                      
+                      <div>
+                        <Header variant="h3">QR Code</Header>
+                        <img 
+                          src={generateQRCode(onchainAddress)} 
+                          alt="Bitcoin Address QR Code"
+                          style={{ maxWidth: '200px' }}
+                        />
+                      </div>
+                    </ColumnLayout>
+                  </SpaceBetween>
+                </Container>
+              )
             }
-          >
-            <ColumnLayout columns={1} variant="text-grid">
-              <div>
-                <Box variant="awsui-key-label">Transaction ID</Box>
-                <div>{txDetails.txid}</div>
-              </div>
-              
-              <div>
-                <Box variant="awsui-key-label">Amount</Box>
-                <div>{txDetails.amount} sats</div>
-              </div>
-              
-              <div>
-                <Box variant="awsui-key-label">Sender</Box>
-                <div>{fromAddress}</div>
-              </div>
-              
-              <div>
-                <Box variant="awsui-key-label">Status</Box>
-                <div>{txDetails.is_settled ? 'Settled' : 'Pending'}</div>
-              </div>
-            </ColumnLayout>
-          </Container>
-        )}
+          ]}
+        />
         
         <Container
           header={
             <Header variant="h2">
-              Testing Instructions
+              Address Usage Guide
             </Header>
           }
         >
           <SpaceBetween size="m">
-            <p>To test this functionality:</p>
+            <div>
+              <Header variant="h4">🚀 Ark Address (VTXOs)</Header>
+              <p>For receiving instant, low-fee payments from other Ark users. These transactions happen off-chain and settle instantly.</p>
+            </div>
             
-            <ol>
-              <li>Enter a test Ark address (e.g., <code>ark1testaddress123456789</code>)</li>
-              <li>Enter an amount in satoshis (e.g., <code>10000</code>)</li>
-              <li>Click the Receive button</li>
-              <li>Verify that you receive a success message with transaction details</li>
-              <li>Check your balance and transaction history</li>
-            </ol>
+            <div>
+              <Header variant="h4">🏦 Boarding Address (Deposits)</Header>
+              <p>For depositing Bitcoin into the Ark system. Send regular Bitcoin here to enter the Ark protocol. Remember to participate in a round after depositing.</p>
+            </div>
             
-            <p><strong>Note:</strong> This is currently using dummy data. In a production environment, you would receive actual Bitcoin transactions.</p>
+            <div>
+              <Header variant="h4">₿ Bitcoin Address (On-chain)</Header>
+              <p>For receiving regular Bitcoin transactions. These funds can be used for standard on-chain payments to any Bitcoin address.</p>
+            </div>
           </SpaceBetween>
         </Container>
       </SpaceBetween>
