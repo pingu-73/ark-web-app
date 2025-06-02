@@ -1,8 +1,8 @@
-# Arkade Wallet
+# ARKiveWallet
 A Hybrid bitcoin wallet with Ark protocol integration for off-chain transactions.
 
 ## overview
-Arkade Web Wallet is a full-stack web application that allows users to:
+ARKive Web Wallet is a full-stack web application that allows users to:
 - Create and manage Bitcoin wallets
 - Send and receive on-chain Bitcoin transactions
 - Send and receive off-chain transactions using the Ark protocol
@@ -109,18 +109,18 @@ This separation avoids complex Taproot signing issues and provides clear operati
 **So if I use a boarding address as a "normal" wallet address for general Bitcoin operations, I risk trapping funds**
 
 ## Wallet-related routes
-|           **Endpoints**          |        **Method**     |            **Handler**           |
-|----------------------------------|-----------------------|----------------------------------|
-|`/api/wallet/info`                |           GET         |api::wallet::get_info             |
-|`/api/wallet/balance`             |           GET         |api::wallet::get_balance          |
-|`/api/wallet/address`             | GET (for ark address) |api::wallet::get_address          |
-|`/api/wallet/boarding-address`    |           GET         |api::wallet::get_boarding_address |
-|`/api/wallet/onchain-address`     |           GET         |api::wallet::get_onchain_address  |
-|`/api/wallet/available-balance`   |           GET         |api::wallet::get_available_balance|
-|`/api/wallet/send-onchain-payment`|           POST        |api::wallet::send_onchain_payment |
-|`/api/wallet/onchain-balance`     |           GET         |api::wallet::get_onchain_balance  |
-|`/api/wallet/estimate-fee`        |           POST        |api::wallet::estimate_onchain_fee |
-|`/api/wallet/estimate-fee`        |           POST        |api::wallet::estimate_onchain_fee |
+|               **Endpoints**              |        **Method**     |            **Handler**                 |
+|------------------------------------------|-----------------------|----------------------------------------|
+|`/api/wallet/info`                        |           GET         |api::wallet::get_info                   |
+|`/api/wallet/balance`                     |           GET         |api::wallet::get_balance                |
+|`/api/wallet/address`                     | GET (for ark address) |api::wallet::get_address                |
+|`/api/wallet/boarding-address`            |           GET         |api::wallet::get_boarding_address       |
+|`/api/wallet/onchain-address`             |           GET         |api::wallet::get_onchain_address        |
+|`/api/wallet/available-balance`           |           GET         |api::wallet::get_available_balance      |
+|`/api/wallet/send-onchain`                |           POST        |api::wallet::send_onchain_with_priority |
+|`/api/wallet/onchain-balance`             |           GET         |api::wallet::get_onchain_balance        |
+|`/api/wallet/estimate-transaction-fees`   |           POST        |api::wallet::estimate_transaction_fees  |
+|`/api/wallet/fee-estimates`               |           GET         |api::wallet::get_fee_estimates_detailed |
 
 ## Transaction history & operations routes
 |       **Endpoints**       |  **Method**  |            **Handler**           |
@@ -164,25 +164,75 @@ curl http://localhost:3030/api/wallet/onchain-balance
 
 ```
 
-### `POST /api/wallet/estimate-fee` 
-- Estimate transaction fees
+### `GET /api/wallet/fee-estimates` 
+- returns real-time estimates from local Bitcoin node
 
 **Example:**
 
 ```
-❯ curl -X POST http://localhost:3030/api/wallet/estimate-fee \
+❯ curl http://localhost:3030/api/wallet/fee-estimates | jq
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100    77  100    77    0     0    186      0 --:--:-- --:--:-- --:--:--   186
+{
+  "fastest": 1,
+  "fast": 1,
+  "normal": 1,
+  "slow": 1,
+  "minimum": 1,
+  "timestamp": 1748885243
+}
+```
+
+### `POST /api/wallet/estimate-transaction-fees`
+- shows accurate fee breakdown: 160/160/160/160 sats (minimum relay fees)
+
+```
+❯ curl -X POST http://localhost:3030/api/wallet/estimate-transaction-fees \
   -H "Content-Type: application/json" \
   -d '{
     "address": "bcrt1p8qekkwku5lkfkcc5995440sa7m3ep54umspjdyq4d62srrd2v4mqkcrm25",
-    "amount": 50000
+    "amount": 100000
   }' | jq
   % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
                                  Dload  Upload   Total   Spent    Left  Speed
-100   129  100    21  100   108    505   2600 --:--:-- --:--:-- --:--:--  3146
+100   510  100   401  100   109   1159    315 --:--:-- --:--:-- --:--:--  1473
 {
-  "estimated_fee": 160
+  "estimates": {
+    "fastest": 1,
+    "fast": 1,
+    "normal": 1,
+    "slow": 1,
+    "minimum": 1,
+    "timestamp": 1748885590
+  },
+  "transaction_fees": [
+    {
+      "priority": "fastest",
+      "blocks": "~10 minutes",
+      "fee_rate": 1,
+      "total_fee": 160
+    },
+    {
+      "priority": "fast",
+      "blocks": "~30 minutes",
+      "fee_rate": 1,
+      "total_fee": 160
+    },
+    {
+      "priority": "normal",
+      "blocks": "~1 hour",
+      "fee_rate": 1,
+      "total_fee": 160
+    },
+    {
+      "priority": "slow",
+      "blocks": "~2-24 hours",
+      "fee_rate": 1,
+      "total_fee": 160
+    }
+  ]
 }
-
 ```
 
 ### `POST /api/wallet/send-onchain-payment` 
@@ -190,21 +240,35 @@ curl http://localhost:3030/api/wallet/onchain-balance
 
 **Example:**
 ```
-❯ curl -X POST http://localhost:3030/api/wallet/send-onchain-payment \
+~/Library/Application Support/Nigiri
+❯ curl -X POST http://localhost:3030/api/wallet/send-onchain \
   -H "Content-Type: application/json" \
-  -d '{"address": "bcrt1q3ky83a28630z2cl5rsucc9cmnnlen4v2fqsd0k", "amount": 50000}'
-{"txid":"c5f10cdb9d8a1219eefebe970d6512ae7b329717a380308c3d15989d7d3cde9e"}
+  -d '{
+    "address": "bcrt1p8qekkwku5lkfkcc5995440sa7m3ep54umspjdyq4d62srrd2v4mqkcrm25",
+    "amount": 100000,
+    "priority": "normal"
+  }'
+{"txid":"b800748257018aa3a4f8c909e1deaf8eaa6fe80f59a4e21852b6dc96639fe605"}
 
-~/Library
-❯ nigiri rpc generatetoaddress 1 $(nigiri rpc getnewaddress)
-[
-    "72c73630a1885a6361359f9906ab59556e3b33bfa34926e67a993f44d3d19612"
-]
 
-~/Library
-❯ curl http://localhost:3030/api/wallet/onchain-balance
-{"balance":949840}
+❯ curl -X POST http://localhost:3030/api/wallet/send-onchain \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "bcrt1p8qekkwku5lkfkcc5995440sa7m3ep54umspjdyq4d62srrd2v4mqkcrm25",
+    "amount": 100000,
+    "priority": "fast"
+  }'
+{"txid":"7e9e8d9040af9b556b036c889fca4987137b18d75bcee218ac71db2424978663"}
 
+
+❯ curl -X POST http://localhost:3030/api/wallet/send-onchain \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "bcrt1p8qekkwku5lkfkcc5995440sa7m3ep54umspjdyq4d62srrd2v4mqkcrm25",
+    "amount": 100000,
+    "priority": "slow"
+  }'
+{"txid":"ce0231bbb684a4d1a22d84a133c8e102ca689d8d8662c4f0177175d46effc90b"}
 ```
 
 ### `GET /api/wallet/available-balance`

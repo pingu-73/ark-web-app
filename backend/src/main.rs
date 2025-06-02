@@ -76,10 +76,10 @@ async fn main() {
         .route("/api/wallet/receive", post(api::wallet::receive_vtxo))
 
         // on-chain tx
-        .route("/api/debug/vtxos", get(api::wallet::debug_vtxos))
-        .route("/api/wallet/send-onchain-payment", post(api::wallet::send_onchain_payment))
         .route("/api/wallet/onchain-balance", get(api::wallet::get_onchain_balance))
-        .route("/api/wallet/estimate-fee", post(api::wallet::estimate_onchain_fee))
+        .route("/api/wallet/fee-estimates", get(api::wallet::get_fee_estimates_detailed))
+        .route("/api/wallet/estimate-transaction-fees", post(api::wallet::estimate_transaction_fees))
+        .route("/api/wallet/send-onchain", post(api::wallet::send_onchain_with_priority))
         
         // tx routes
         .route("/api/transactions", get(api::transactions::get_history))
@@ -90,6 +90,9 @@ async fn main() {
 
         // unilateral exit
         .route("/api/transactions/exit", post(api::transactions::unilateral_exit))
+
+        // debug
+        .route("/api/debug/vtxos", get(api::wallet::debug_vtxos))
         
         // add middleware
         .layer(TraceLayer::new_for_http())

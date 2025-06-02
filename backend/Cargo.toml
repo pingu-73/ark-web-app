@@ -38,6 +38,7 @@ bip39 = { version = "2.1.0", features = ["rand"] }
 bincode = "2.0.1"
 parking_lot = { version = "0.12", features = ["send_guard"] }
 async-trait = "0.1.88"
+reqwest = { version = "0.11", features = ["json"] }
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

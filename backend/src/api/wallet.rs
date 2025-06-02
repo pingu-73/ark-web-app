@@ -4,7 +4,7 @@ use axum::{
     response::IntoResponse,
     http::StatusCode,
 };
-use crate::models::wallet::SendRequest;
+use crate::models::wallet::{SendRequest, SendOnchainRequest, EstimateFeeDetailedRequest};
 use crate::services::wallet;
 
 pub async fn get_info() -> impl IntoResponse {
@@ -136,18 +136,6 @@ pub async fn get_onchain_address() -> impl IntoResponse {
     }
 }
 
-pub async fn send_onchain_payment(Json(request): Json<SendRequest>) -> impl IntoResponse {
-    match wallet::send_onchain_payment(request.address, request.amount).await {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(e) => {
-            tracing::error!("Error sending on-chain payment: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": e.to_string()
-            }))).into_response()
-        }
-    }
-}
-
 pub async fn get_onchain_balance() -> impl IntoResponse {
     match wallet::get_onchain_balance().await {
         Ok(balance) => (StatusCode::OK, Json(serde_json::json!({
@@ -162,13 +150,45 @@ pub async fn get_onchain_balance() -> impl IntoResponse {
     }
 }
 
-pub async fn estimate_onchain_fee(Json(request): Json<SendRequest>) -> impl IntoResponse {
-    match wallet::estimate_onchain_fee(request.address, request.amount).await {
-        Ok(fee) => (StatusCode::OK, Json(serde_json::json!({
-            "estimated_fee": fee
-        }))).into_response(),
+pub async fn get_fee_estimates_detailed() -> impl IntoResponse {
+    match wallet::get_detailed_fee_estimates().await {
+        Ok(estimates) => (StatusCode::OK, Json(estimates)).into_response(),
         Err(e) => {
-            tracing::error!("Error estimating fee: {}", e);
+            tracing::error!("Error getting fee estimates: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}
+
+pub async fn estimate_transaction_fees(
+    Json(request): Json<EstimateFeeDetailedRequest>
+) -> impl IntoResponse {
+    match wallet::estimate_onchain_fee_detailed(request.address, request.amount).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            tracing::error!("Error estimating transaction fees: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response()
+        }
+    }
+}
+
+pub async fn send_onchain_with_priority(
+    Json(request): Json<SendOnchainRequest>
+) -> impl IntoResponse {
+    let priority = request.priority.unwrap_or_else(|| "normal".to_string());
+    
+    match wallet::send_onchain_payment_with_fee_priority(
+        request.address,
+        request.amount,
+        priority.into()
+    ).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(e) => {
+            tracing::error!("Error sending payment: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
                 "error": e.to_string()
             }))).into_response()

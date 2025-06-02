@@ -8,6 +8,7 @@ use ark_client::Blockchain;
 use std::sync::Arc;
 use std::str::FromStr;
 use crate::services::ark_grpc::EsploraBlockchain;
+use crate::services::onchain::fee_estimator::{FeeEstimates, FeePriority};
 use super::utxo_manager::SpendableUtxo;
 
 pub struct TransactionBuilder {
@@ -59,6 +60,42 @@ impl TransactionBuilder {
         ).await?;
 
         Ok(fee)
+    }
+
+    pub async fn estimate_fee_with_estimates(
+        &self,
+        available_utxos: Vec<SpendableUtxo>,
+        to_address: Address,
+        amount: Amount,
+        fee_estimates: &FeeEstimates,
+    ) -> Result<Vec<(FeePriority, Amount)>> {
+        let priorities = vec![
+            FeePriority::Fastest,
+            FeePriority::Fast,
+            FeePriority::Normal,
+            FeePriority::Slow,
+        ];
+
+        let mut results = Vec::new();
+
+        for priority in priorities {
+            let fee_rate = match priority {
+                FeePriority::Fastest => fee_estimates.fastest,
+                FeePriority::Fast => fee_estimates.fast,
+                FeePriority::Normal => fee_estimates.normal,
+                FeePriority::Slow => fee_estimates.slow,
+            };
+
+            let fee_rate = FeeRate::from_sat_per_vb(fee_rate)
+                .ok_or_else(|| anyhow!("Invalid fee rate"))?;
+
+            match self.estimate_fee(available_utxos.clone(), to_address.clone(), amount, fee_rate).await {
+                Ok(fee) => results.push((priority, fee)),
+                Err(e) => tracing::warn!("Failed to estimate fee for {:?}: {}", priority, e),
+            }
+        }
+
+        Ok(results)
     }
 
     async fn build_transaction(

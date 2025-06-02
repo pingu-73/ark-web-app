@@ -11,9 +11,9 @@ use bitcoin::{Address, Amount, Txid};
 use crate::services::ark_grpc::EsploraBlockchain;
 
 pub struct OnChainPaymentService {
-    utxo_manager: UtxoManager,
-    fee_estimator: FeeEstimator,
-    transaction_builder: TransactionBuilder,
+    pub utxo_manager: UtxoManager,
+    pub fee_estimator: FeeEstimator,
+    pub transaction_builder: TransactionBuilder,
 }
 
 impl OnChainPaymentService {
