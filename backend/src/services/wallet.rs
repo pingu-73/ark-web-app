@@ -1,17 +1,14 @@
 #![allow(unused_imports, unused_variables, unused_assignments)]
 use crate::models::wallet::*;
 use crate::services::APP_STATE;
+use crate::services::onchain::{OnChainPaymentService, FeeEstimator};
+use crate::services::onchain::fee_estimator::{FeePriority, FeeEstimates};
 use anyhow::{Result, Context};
 use ark_core::ArkAddress;
 use bitcoin::Amount;
-use std::sync::RwLock;
-use once_cell::sync::Lazy;
-use bitcoin::hashes::{Hash, HashEngine};
-use bitcoin::hashes::sha256;
-use bitcoin::hashes::ripemd160;
+use std::sync::Arc;
 
-// static keypair for ark and bitcoin addr generation
-static WALLET_KEYPAIR: Lazy<RwLock<Option<bitcoin::key::Keypair>>> = Lazy::new(|| RwLock::new(None));
+use std::str::FromStr;
 
 pub async fn get_wallet_info() -> Result<WalletInfo> {
     let grpc_client = APP_STATE.grpc_client.lock().await;
@@ -32,184 +29,111 @@ pub async fn get_wallet_info() -> Result<WalletInfo> {
     Ok(info)
 }
 
-pub async fn get_balance() -> Result<WalletBalance> {
-    let balance = APP_STATE.balance.lock().await.clone();
-    
-    Ok(balance)
-}
-
 pub async fn get_available_balance() -> Result<u64> {
-    let balance = APP_STATE.balance.lock().await;
-    Ok(balance.confirmed)
-}
+    APP_STATE.recalculate_balance().await?;
 
-fn get_or_create_keypair() -> Result<bitcoin::key::Keypair> {
-    let mut keypair_guard = WALLET_KEYPAIR.write().map_err(|_| anyhow::anyhow!("Failed to acquire write lock"))?;
-    
-    if keypair_guard.is_none() {
-        // generate a new keypair if one doesn't exist
-        let secp = bitcoin::secp256k1::Secp256k1::new();
-        let mut rng = bitcoin::key::rand::thread_rng();
-        *keypair_guard = Some(bitcoin::key::Keypair::new(&secp, &mut rng));
-    }
-    
-    // clone the keypair to return it
-    Ok(keypair_guard.as_ref().unwrap().clone())
+    let balance = APP_STATE.balance.lock().await;
+    let available = balance.confirmed;
+
+    tracing::info!("Available balance: {}", available);
+
+    Ok(available)
 }
 
 pub async fn get_offchain_address() -> Result<AddressResponse> {
-    // get the shared keypair
-    let keypair = get_or_create_keypair()?;
+    let grpc_client = APP_STATE.grpc_client.lock().await;
     
-    // find network from env variables
-    let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".into()).as_str() {
-        "mainnet" => bitcoin::Network::Bitcoin,
-        "testnet" => bitcoin::Network::Testnet,
-        "regtest" => bitcoin::Network::Regtest,
-        _ => bitcoin::Network::Regtest,
-    };
-    
-    // [TODO!!] get the server's public key (this would come from the server)
-    // for implementatgion purposes using a fixed key
-    let secp = bitcoin::secp256k1::Secp256k1::new();
-    let server_secret_key = bitcoin::secp256k1::SecretKey::from_slice(
-        &hex::decode("0101010101010101010101010101010101010101010101010101010101010101").unwrap()
-    ).unwrap();
-    let server_keypair = bitcoin::key::Keypair::from_secret_key(&secp, &server_secret_key);
-    let (server_xonly_pk, _) = server_keypair.x_only_public_key();
-    
-    // derive VTXO taproot key from the user's keypair
-    let (user_xonly_pk, _) = keypair.x_only_public_key();
-    let vtxo_tap_key = bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(user_xonly_pk);
-    
-    // creating ark addrs
-    let ark_address = ark_core::ArkAddress::new(
-        network,
-        server_xonly_pk,
-        vtxo_tap_key,
-    );
-    
-    // encode addr to a string
-    let address = ark_address.encode();
-    
-    Ok(AddressResponse { address })
+    match grpc_client.get_address().await {
+        Ok(address) => Ok(AddressResponse { address }),
+        Err(e) => Err(anyhow::anyhow!("Failed to get offchain address: {}", e))
+    }
 }
 
 pub async fn get_boarding_address() -> Result<AddressResponse> {
-    let keypair = get_or_create_keypair()?;
+    let grpc_client = APP_STATE.grpc_client.lock().await;
     
-    let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".into()).as_str() {
-        "mainnet" => bitcoin::Network::Bitcoin,
-        "testnet" => bitcoin::Network::Testnet,
-        "regtest" => bitcoin::Network::Regtest,
-        _ => bitcoin::Network::Regtest,
-    };
-    
-    // create a P2WPKH script
-    let pubkey = keypair.public_key();
-    
-    let pubkey_hash = bitcoin::hashes::hash160::Hash::hash(&pubkey.serialize());
-    
-    // becasue new_p2wpkh uses it
-    let wpubkey_hash = bitcoin::WPubkeyHash::from_slice(&pubkey_hash[..])
-        .map_err(|e| anyhow::anyhow!("Failed to create WPubkeyHash: {}", e))?;
-    
-    
-    let script = bitcoin::blockdata::script::ScriptBuf::new_p2wpkh(&wpubkey_hash);
-    
-    // bitcoin addr from the script
-    let address = bitcoin::Address::from_script(&script, network)?;
-    
-    Ok(AddressResponse {
-        address: address.to_string(),
-    })
+    match grpc_client.get_boarding_address().await {
+        Ok(address) => Ok(AddressResponse { address }),
+        Err(e) => Err(anyhow::anyhow!("Failed to get boarding address: {}", e))
+    }
 }
 
 pub async fn check_deposits() -> Result<serde_json::Value> {
-    // [TODO!!] In a real implementation, you would check the blockchain for deposits to your addresses
-    // for demonstration purposes we'll just add a dummy deposit to the tx history
+    let grpc_client = APP_STATE.grpc_client.lock().await;
     
-    // add a "Boarding" tx to the history
-    let mut transactions = APP_STATE.transactions.lock().await;
-    transactions.push(crate::models::wallet::TransactionResponse {
-        txid: format!("deposit_{}", chrono::Utc::now().timestamp()),
-        amount: 100000000, // 1 BTC in satoshis
-        timestamp: chrono::Utc::now().timestamp(),
-        type_name: "Boarding".to_string(),
-        is_settled: Some(true),
-    });
-    
-    // recalculate balance
-    drop(transactions);
-    APP_STATE.recalculate_balance().await?;
-    
-    Ok(serde_json::json!({
-        "message": "Successfully added 1 BTC deposit",
-        "amount": "1 BTC"
-    }))
+    match grpc_client.check_deposits().await {
+        Ok(true) => {
+            APP_STATE.recalculate_balance().await?;
+            Ok(serde_json::json!({
+                "message": "Successfully processed deposits",
+                "success": true
+            }))
+        },
+        Ok(false) => Ok(serde_json::json!({
+            "message": "No deposits to process",
+            "success": false
+        })),
+        Err(e) => Err(anyhow::anyhow!("Failed to check deposits: {}", e))
+    }
 }
 
 pub async fn send_vtxo(address: String, amount: u64) -> Result<SendResponse> {
-    // Calculate available balance (confirmed minus pending outgoing)
-    let transactions = APP_STATE.transactions.lock().await;
-    
-    let mut available_balance = 0;
-    let mut confirmed_balance = 0;
-    
-    // First, calculate confirmed balance
-    for tx in transactions.iter() {
-        if tx.is_settled == Some(true) {
-            if tx.amount > 0 {
-                confirmed_balance += tx.amount as u64;
-            } else {
-                confirmed_balance = confirmed_balance.saturating_sub(tx.amount.abs() as u64);
-            }
-        }
-    }
-    
-    // Then, subtract pending outgoing transactions
-    let mut pending_outgoing = 0;
-    for tx in transactions.iter() {
-        if tx.is_settled == Some(false) && tx.amount < 0 {
-            pending_outgoing += tx.amount.abs() as u64;
-        }
-    }
-    
-    available_balance = confirmed_balance.saturating_sub(pending_outgoing);
-    
-    // release tx lock
-    drop(transactions);
-    
+    let available_balance = get_available_balance().await?;
     if available_balance < amount {
         return Err(anyhow::anyhow!(
-            "Insufficient balance: have {} available (confirmed: {}, pending outgoing: {}), need {}",
-            available_balance, confirmed_balance, pending_outgoing, amount
+            "Insufficient balance: have {} available, need {}",
+            available_balance, amount
         ));
     }
+
+    let grpc_client = APP_STATE.grpc_client.lock().await;
     
-    // unique tx ID based on timestamp and nonce
-    let txid = format!("tx_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
+    tracing::info!("Attempting to send {} satoshis to address: {}", amount, address);
     
-    // add tx to history
-    let mut transactions = APP_STATE.transactions.lock().await;
-    transactions.push(crate::models::wallet::TransactionResponse {
-        txid: txid.clone(),
-        amount: -(amount as i64),  // -ve amount for outgoing transaction
-        timestamp: chrono::Utc::now().timestamp(),
-        type_name: "Send".to_string(),
-        is_settled: Some(false),  // initially pending
-    });
-    
-    drop(transactions);
-    
-    // recalculate balance for consistency
-    APP_STATE.recalculate_balance().await?;
-    
-    let response = crate::models::wallet::SendResponse {
-        txid,
-    };
-    
-    Ok(response)
+    // validate the address format
+    match ArkAddress::decode(&address) {
+        Ok(ark_address) => {
+            tracing::info!("Successfully parsed Ark address");
+            
+            match grpc_client.send_vtxo(address, amount).await {
+                Ok(txid) => {
+                    tracing::info!("Successfully sent VTXO with txid: {}", txid);
+                    
+                    // create tx record
+                    let tx = TransactionResponse {
+                        txid: txid.clone(),
+                        amount: -(amount as i64),
+                        timestamp: chrono::Utc::now().timestamp(),
+                        type_name: "Redeem".to_string(),
+                        is_settled: Some(false),
+                    };
+                    
+                    // save to in-memory state
+                    let mut transactions = APP_STATE.transactions.lock().await;
+                    transactions.push(tx.clone());
+                    drop(transactions);
+                    
+                    // save to db
+                    if let Err(e) = crate::services::transactions::save_transaction_to_db(&tx).await {
+                        tracing::error!("Error saving transaction to database: {}", e);
+                    }
+                    
+                    // recalculate balance
+                    APP_STATE.recalculate_balance().await?;
+                    
+                    Ok(SendResponse { txid })
+                },
+                Err(e) => {
+                    tracing::error!("Failed to send VTXO: {}", e);
+                    Err(anyhow::anyhow!("Failed to send VTXO: {}", e))
+                }
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to parse Ark address: {}", e);
+            Err(anyhow::anyhow!("Failed to parse Ark address: {}", e))
+        }
+    }
 }
 
 pub async fn receive_vtxo(from_address: String, amount: u64) -> Result<TransactionResponse> {
@@ -217,21 +141,214 @@ pub async fn receive_vtxo(from_address: String, amount: u64) -> Result<Transacti
     let txid = format!("rx_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
     
     // add tx to the history
-    let mut transactions = APP_STATE.transactions.lock().await;
     let tx = TransactionResponse {
         txid: txid.clone(),
-        amount: amount as i64, // +ve amount for incoming transaction
+        amount: amount as i64, // +ve amount for incoming tx
         timestamp: chrono::Utc::now().timestamp(),
         type_name: "Receive".to_string(),
         is_settled: Some(false), // initially pending
     };
+    
+    // save to in-memory state
+    let mut transactions = APP_STATE.transactions.lock().await;
     transactions.push(tx.clone());
     
     // release tx lock
     drop(transactions);
+
+    // save to db
+    crate::services::transactions::save_transaction_to_db(&tx).await?;
     
     // recalculate balance for consistency
     APP_STATE.recalculate_balance().await?;
     
     Ok(tx)
+}
+
+
+pub async fn get_onchain_address() -> Result<String> {
+    let (keypair, _) = APP_STATE.key_manager.load_or_create_wallet()?;
+    
+    let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".to_string()).as_str() {
+        "mainnet" => bitcoin::Network::Bitcoin,
+        "testnet" => bitcoin::Network::Testnet,
+        "signet" => bitcoin::Network::Signet,
+        _ => bitcoin::Network::Regtest,
+    };
+
+    let pubkey = keypair.public_key();
+    let pubkey_bytes = pubkey.serialize();
+    let wpkh = bitcoin::key::CompressedPublicKey::from_slice(&pubkey_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to create WPKH: {}", e))?;
+    let address = bitcoin::Address::p2wpkh(&wpkh, network);
+
+    Ok(address.to_string())
+}
+
+pub async fn debug_vtxos() -> Result<serde_json::Value> {
+    let grpc_client = APP_STATE.grpc_client.lock().await;
+    
+    // Clone the Arc to avoid holding lock
+    let client = {
+        let client_opt = grpc_client.get_ark_client();
+        client_opt.as_ref().map(|c| Arc::clone(c))
+    };
+    
+    if let Some(client) = client {
+        match client.spendable_vtxos().await {
+            Ok(vtxos) => {
+                Ok(serde_json::json!({
+                    "count": vtxos.len(),
+                    "vtxos": vtxos.iter().map(|(outpoints, vtxo)| {
+                        serde_json::json!({
+                            "outpoints": outpoints.len(),
+                            "vtxo_address": vtxo.address().to_string(),
+                            "outpoint_details": outpoints.iter().map(|o| {
+                                serde_json::json!({
+                                    "outpoint": o.outpoint.to_string(),
+                                    "amount": o.amount.to_sat(),
+                                    "is_pending": o.is_pending,
+                                    "expire_at": o.expire_at,
+                                })
+                            }).collect::<Vec<_>>()
+                        })
+                    }).collect::<Vec<_>>()
+                }))
+            },
+            Err(e) => {
+                Ok(serde_json::json!({
+                    "error": format!("Failed to get spendable VTXOs: {}", e)
+                }))
+            }
+        }
+    } 
+    else {
+        Ok(serde_json::json!({
+            "error": "Ark client not available"
+        }))
+    }
+}
+
+
+pub async fn get_onchain_balance() -> Result<u64> {
+    let esplora_url = std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(&esplora_url)?);
+    
+    let payment_service = OnChainPaymentService::new(blockchain);
+    let balance = payment_service.get_balance().await?;
+    
+    Ok(balance.to_sat())
+}
+
+pub async fn get_detailed_fee_estimates() -> Result<FeeEstimates> {
+    let esplora_url = std::env::var("ESPLORA_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(&esplora_url)?);
+    
+    let fee_estimator = FeeEstimator::new(blockchain);
+    fee_estimator.get_fee_estimates().await
+}
+
+pub async fn send_onchain_payment_with_fee_priority(
+    address: String,
+    amount: u64,
+    priority: FeePriority,
+) -> Result<SendResponse> {
+    let bitcoin_address = bitcoin::Address::from_str(&address)?
+        .assume_checked();
+
+    let esplora_url = std::env::var("ESPLORA_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(&esplora_url)?);
+    
+    let payment_service = OnChainPaymentService::new(blockchain);
+    
+    // fee rate for the selected priority
+    let fee_rate = payment_service.fee_estimator
+        .estimate_fee_for_priority(priority)
+        .await?;
+    
+    tracing::info!(
+        "Sending {} sats to {} with {:?} priority ({} sat/vB)",
+        amount, address, priority, fee_rate.to_sat_per_vb_ceil()
+    );
+    
+    let amount = bitcoin::Amount::from_sat(amount);
+    let txid = payment_service.transaction_builder
+        .build_and_broadcast(
+            payment_service.utxo_manager.get_spendable_utxos().await?,
+            bitcoin_address,
+            amount,
+            fee_rate
+        )
+        .await?;
+    
+    // record tx
+    let tx = TransactionResponse {
+        txid: txid.to_string(),
+        amount: -(amount.to_sat() as i64),
+        timestamp: chrono::Utc::now().timestamp(),
+        type_name: "OnChain".to_string(),
+        is_settled: Some(false),
+    };
+    
+    let mut transactions = APP_STATE.transactions.lock().await;
+    transactions.push(tx.clone());
+    drop(transactions);
+    
+    if let Err(e) = crate::services::transactions::save_transaction_to_db(&tx).await {
+        tracing::error!("Error saving transaction to database: {}", e);
+    }
+    
+    Ok(SendResponse { txid: txid.to_string() })
+}
+
+
+pub async fn estimate_onchain_fee_detailed(
+    address: String,
+    amount: u64,
+) -> Result<FeeEstimateResponse> {
+    let bitcoin_address = bitcoin::Address::from_str(&address)?
+        .assume_checked();
+    
+    let esplora_url = std::env::var("ESPLORA_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(&esplora_url)?);
+    
+    let payment_service = OnChainPaymentService::new(blockchain);
+    let fee_estimator = &payment_service.fee_estimator;
+    
+    // current fee estimates
+    let estimates = fee_estimator.get_fee_estimates().await?;
+    
+    // fees for each priority
+    let utxos = payment_service.utxo_manager.get_spendable_utxos().await?;
+    let amount = bitcoin::Amount::from_sat(amount);
+    
+    let mut transaction_fees = Vec::new();
+    
+    for (priority, priority_name, blocks) in vec![
+        (FeePriority::Fastest, "fastest", "~10 minutes"),
+        (FeePriority::Fast, "fast", "~30 minutes"),
+        (FeePriority::Normal, "normal", "~1 hour"),
+        (FeePriority::Slow, "slow", "~2-24 hours"),
+    ] {
+        let fee_rate = fee_estimator.estimate_fee_for_priority(priority).await?;
+        
+        if let Ok(total_fee) = payment_service.transaction_builder
+            .estimate_fee(utxos.clone(), bitcoin_address.clone(), amount, fee_rate)
+            .await {
+            transaction_fees.push(TransactionFeeEstimate {
+                priority: priority_name.to_string(),
+                blocks: blocks.to_string(),
+                fee_rate: fee_rate.to_sat_per_vb_ceil(),
+                total_fee: total_fee.to_sat(),
+            });
+        }
+    }
+    
+    Ok(FeeEstimateResponse {
+        estimates,
+        transaction_fees,
+    })
 }

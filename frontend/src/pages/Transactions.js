@@ -1,4 +1,4 @@
-import React, { useState, useEffect, fetchTransactions } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Container,
   Header,
@@ -30,28 +30,32 @@ function Transactions() {
 
   const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3030/api';
 
-  useEffect(() => {
-    fetchTransactions();
-  }, []);
-
   const fetchTransactions = async () => {
     try {
       setLoading(true);
+      console.log('Fetching transactions from:', `${API_URL}/transactions`);
       const response = await fetch(`${API_URL}/transactions`);
       
+      console.log('Response status:', response.status);
       if (!response.ok) {
         throw new Error(`Error fetching transactions: ${response.statusText}`);
       }
       
       const data = await response.json();
+      console.log('Transactions data:', data);
       setTransactions(data);
       setError(null);
     } catch (err) {
+      console.error('Error fetching transactions:', err);
       setError('Failed to load transactions: ' + err.message);
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchTransactions();
+  }, []);
 
   const formatDate = (timestamp) => {
     return new Date(timestamp * 1000).toLocaleString();
@@ -134,6 +138,10 @@ function Transactions() {
             {error}
           </Box>
         )}
+
+        <Button onClick={fetchTransactions} variant="normal">
+          Refresh Transactions
+        </Button>
 
         <Table
           header={

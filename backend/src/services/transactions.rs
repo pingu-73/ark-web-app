@@ -1,15 +1,141 @@
 #![allow(unused_imports, unused_variables, unused_assignments)]
 use crate::models::wallet::TransactionResponse;
 use crate::services::APP_STATE;
+use ark_client::Blockchain;
 use anyhow::{Result, Context};
-use bitcoin::opcodes::all;
-use std::collections::HashSet;
+
+use std::sync::Arc;
+use std::str::FromStr;
 
 pub async fn get_transaction_history() -> Result<Vec<TransactionResponse>> {
-    // tx from the app state
-    let transactions = APP_STATE.transactions.lock().await.clone();
+    let mut all_transactions = Vec::new();
     
-    Ok(transactions)
+    // Ark related tx
+    let grpc_client = APP_STATE.grpc_client.lock().await;
+    match grpc_client.get_transaction_history().await {
+        Ok(ark_history) => {
+            let ark_transactions = ark_history.into_iter().map(|(txid, amount, timestamp, type_name, is_settled)| {
+                TransactionResponse {
+                    txid,
+                    amount,
+                    timestamp,
+                    type_name,
+                    is_settled: Some(is_settled),
+                }
+            }).collect::<Vec<_>>();
+            all_transactions.extend(ark_transactions);
+        },
+        Err(e) => {
+            tracing::warn!("Failed to get Ark transactions: {}", e);
+        }
+    }
+    
+    // regular on-chain tx
+    match get_onchain_transactions().await {
+        Ok(onchain_transactions) => {
+            all_transactions.extend(onchain_transactions);
+        },
+        Err(e) => {
+            tracing::warn!("Failed to get on-chain transactions: {}", e);
+        }
+    }
+    
+    // sort by timestamp (newest first)
+    all_transactions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    
+    Ok(all_transactions)
+}
+
+async fn get_onchain_transactions() -> Result<Vec<TransactionResponse>> {
+    let esplora_url = std::env::var("ESPLORA_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(&esplora_url)?);
+    
+    let address_str = crate::services::wallet::get_onchain_address().await?;
+    let address = bitcoin::Address::from_str(&address_str)?.assume_checked();
+    
+    let mut onchain_transactions = Vec::new();
+    let existing_txids: std::collections::HashSet<String> = {
+        let app_transactions = APP_STATE.transactions.lock().await;
+        app_transactions.iter().map(|tx| tx.txid.clone()).collect()
+    };
+    
+    let all_transactions = get_all_address_transactions(&blockchain, &address).await?;
+    
+    for (txid, net_amount, timestamp) in all_transactions {
+        if existing_txids.contains(&txid) {
+            continue;
+        }
+        
+        if net_amount != 0 {
+            let tx_response = TransactionResponse {
+                txid: txid.clone(),
+                amount: net_amount,
+                timestamp,
+                type_name: "OnChain".to_string(),
+                is_settled: Some(true),
+            };
+            
+            onchain_transactions.push(tx_response);
+        }
+    }
+    
+    // save to APP_STATE and db
+    if !onchain_transactions.is_empty() {
+        let mut app_transactions = APP_STATE.transactions.lock().await;
+        for tx in &onchain_transactions {
+            app_transactions.push(tx.clone());
+            
+            if let Err(e) = save_transaction_to_db(tx).await {
+                tracing::error!("Failed to save transaction {} to database: {}", tx.txid, e);
+            }
+        }
+    }
+    
+    Ok(onchain_transactions)
+}
+
+async fn get_all_address_transactions(
+    blockchain: &Arc<crate::services::ark_grpc::EsploraBlockchain>,
+    address: &bitcoin::Address,
+) -> Result<Vec<(String, i64, i64)>> {
+    let script_pubkey = address.script_pubkey();
+    let mut transactions = std::collections::HashMap::new();
+    
+    // get all UTXOs (both spent and unspent) for this address
+    let explorer_utxos = blockchain.find_outpoints(address).await
+        .map_err(|e| anyhow::anyhow!("Failed to find outpoints: {}", e))?;
+    
+    for utxo in explorer_utxos {
+        let txid = utxo.outpoint.txid.to_string();
+        let timestamp = utxo.confirmation_blocktime.unwrap_or(chrono::Utc::now().timestamp() as u64) as i64;
+        
+        //  incoming
+        let entry = transactions.entry(txid.clone()).or_insert((0i64, timestamp));
+        entry.0 += utxo.amount.to_sat() as i64;
+        
+        // for spend UTXO => what tx spent it
+        if utxo.is_spent {
+            if let Ok(spend_status) = blockchain.get_output_status(&utxo.outpoint.txid, utxo.outpoint.vout).await {
+                if let Some(spending_txid) = spend_status.spend_txid {
+                    let spending_txid_str = spending_txid.to_string();
+                    
+                    if spending_txid_str != txid {
+                        // outgoing
+                        let spend_entry = transactions.entry(spending_txid_str).or_insert((0i64, chrono::Utc::now().timestamp()));
+                        spend_entry.0 -= utxo.amount.to_sat() as i64;
+                    }
+                }
+            }
+        }
+    }
+    
+    let result: Vec<(String, i64, i64)> = transactions
+        .into_iter()
+        .map(|(txid, (amount, timestamp))| (txid, amount, timestamp))
+        .collect();
+    
+    Ok(result)
 }
 
 pub async fn get_transaction(txid: String) -> Result<TransactionResponse> {
@@ -26,69 +152,79 @@ pub async fn get_transaction(txid: String) -> Result<TransactionResponse> {
 }
 
 pub async fn participate_in_round() -> Result<Option<String>> {
-    let mut transactions = APP_STATE.transactions.lock().await;
+    tracing::info!("Starting round participation");
+    let grpc_client = APP_STATE.grpc_client.lock().await;
+    tracing::info!("Acquired gRPC client lock");
+    let mut rng = bip39::rand::rngs::OsRng;
     
-    // find all pending txs
-    let pending_txs: Vec<_> = transactions.iter()
-        .filter(|tx| tx.is_settled == Some(false))
-        .collect();
+    // Clone the Arc to avoid holding lock
+    let client = {
+        let client_opt = grpc_client.get_ark_client();
+        client_opt.as_ref().map(|c| Arc::clone(c))
+    };
     
-    if pending_txs.is_empty() {
-        // no pending tx to settle
-        return Ok(None);
-    }
-    
-    // calculate total outgoing amount
-    let total_outgoing: i64 = pending_txs.iter()
-        .filter(|tx| tx.amount < 0)
-        .map(|tx| tx.amount.abs())
-        .sum();
-    
-    // get confirmed balance
-    let balance = APP_STATE.balance.lock().await;
-    let confirmed_balance = balance.confirmed;
-    drop(balance);
-    
-    // ensure there is enough balance
-    if confirmed_balance < total_outgoing as u64 {
-        return Err(anyhow::anyhow!(
-            "Insufficient balance for round: have {} confirmed, need {}",
-            confirmed_balance, total_outgoing
-        ));
-    }
-    
-    // mark all pending tx as settled
-    let mut settled_txids = Vec::new();
-    for tx in transactions.iter_mut() {
-        if tx.is_settled == Some(false) {
-            tx.is_settled = Some(true);
-            settled_txids.push(tx.txid.clone());
+    if let Some(client) = client {
+        tracing::info!("Got Ark client");
+        
+        // try to board
+        tracing::info!("Attempting to board funds");
+        match client.board(&mut rng).await {
+            Ok(_) => {
+                tracing::info!("Successfully participated in round");
+                
+                // update app state after round participation
+                match grpc_client.update_app_state().await {
+                    Ok(_) => tracing::info!("Successfully updated app state after round participation"),
+                    Err(e) => tracing::warn!("Failed to update app state after round participation: {}", e),
+                }
+                
+                // recalculate balance
+                match APP_STATE.recalculate_balance().await {
+                    Ok(_) => tracing::info!("Successfully recalculated balance after round participation"),
+                    Err(e) => tracing::warn!("Failed to recalculate balance after round participation: {}", e),
+                }
+                
+                // return a placeholder txid for now
+                let txid = format!("round_{}", chrono::Utc::now().timestamp());
+                
+                // create a tx record
+                let tx = crate::models::wallet::TransactionResponse {
+                    txid: txid.clone(),
+                    amount: 0, // rounds don't change the total balance
+                    timestamp: chrono::Utc::now().timestamp(),
+                    type_name: "Round".to_string(),
+                    is_settled: Some(true),
+                };
+                
+                // save to in-memory state
+                let mut transactions = APP_STATE.transactions.lock().await;
+                transactions.push(tx.clone());
+                drop(transactions);
+                
+                // save to db
+                match save_transaction_to_db(&tx).await {
+                    Ok(_) => tracing::info!("Successfully saved round transaction to database"),
+                    Err(e) => tracing::error!("Error saving transaction to database: {}", e),
+                }
+                
+                Ok(Some(txid))
+            },
+            Err(e) => {
+                if e.to_string().contains("No boarding outputs") && e.to_string().contains("No VTXOs") {
+                    tracing::info!("No outputs to include in round");
+                    Ok(None)
+                } 
+                else {
+                    tracing::error!("Error participating in round: {}", e);
+                    Err(anyhow::anyhow!("Error participating in round: {}", e))
+                }
+            }
         }
+    } 
+    else {
+        tracing::error!("Ark client not available");
+        Err(anyhow::anyhow!("Ark client not available"))
     }
-    
-    let round_txid = format!("round_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
-    
-    // add round tx to the history
-    transactions.push(crate::models::wallet::TransactionResponse {
-        txid: round_txid.clone(),
-        amount: 0, // rounds don't change balance directly
-        timestamp: chrono::Utc::now().timestamp(),
-        type_name: "Round".to_string(),
-        is_settled: Some(true),
-    });
-    
-    drop(transactions);
-    
-    // recalculate balance for consistency
-    APP_STATE.recalculate_balance().await?;
-    
-    // Log the settled transactions
-    tracing::info!(
-        "Round {} settled {} transactions: {:?}",
-        round_txid, settled_txids.len(), settled_txids
-    );
-    
-    Ok(Some(round_txid))
 }
 
 pub async fn create_redeem_transaction(
@@ -128,7 +264,6 @@ pub async fn create_redeem_transaction(
     Ok(tx)
 }
 
-// new function to handle incoming redeem transactions
 pub async fn receive_redeem_transaction(
     sender_address: String,
     amount: u64,
@@ -153,71 +288,30 @@ pub async fn receive_redeem_transaction(
 }
 
 pub async fn unilateral_exit(vtxo_txid: String) -> Result<TransactionResponse> {
-    // find tx
-    let transactions = APP_STATE.transactions.lock().await;
+    let grpc_client = APP_STATE.grpc_client.lock().await;
     
-    // check if tx exists
-    let tx_exists = transactions.iter().any(|tx| tx.txid == vtxo_txid);
-    if !tx_exists {
-        drop(transactions);
-        return Err(anyhow::anyhow!("Transaction not found: {}", vtxo_txid));
+    match grpc_client.unilateral_exit(vtxo_txid).await {
+        Ok(tx) => Ok(tx),
+        Err(e) => Err(anyhow::anyhow!("Failed to perform unilateral exit: {}", e))
     }
+}
+
+pub async fn save_transaction_to_db(tx: &crate::models::wallet::TransactionResponse) -> Result<()> {
+    let conn = APP_STATE.db_manager.get_conn()?;
     
-    // check it's in right state
-    let vtxo = transactions.iter()
-        .find(|tx| tx.txid == vtxo_txid && tx.is_settled == Some(false))
-        .cloned();
+    conn.execute(
+        "INSERT OR REPLACE INTO transactions (
+            txid, amount, timestamp, type_name, is_settled, raw_tx
+        ) VALUES (?, ?, ?, ?, ?, ?)",
+        rusqlite::params![
+            tx.txid,
+            tx.amount,
+            tx.timestamp,
+            tx.type_name,
+            tx.is_settled,
+            Option::<String>::None, // raw_tx (optional)
+        ],
+    )?;
     
-    if vtxo.is_none() {
-        // tx exists but is not in pending state
-        let tx = transactions.iter()
-            .find(|tx| tx.txid == vtxo_txid)
-            .unwrap();
-            
-        if tx.is_settled == Some(true) {
-            drop(transactions);
-            return Err(anyhow::anyhow!("Transaction is already settled: {}", vtxo_txid));
-        } else if tx.is_settled == None {
-            drop(transactions);
-            return Err(anyhow::anyhow!("Transaction is already cancelled: {}", vtxo_txid));
-        } else {
-            drop(transactions);
-            return Err(anyhow::anyhow!("Transaction is in an unknown state: {}", vtxo_txid));
-        }
-    }
-    
-    let vtxo = vtxo.unwrap();
-    drop(transactions);
-    
-    // generate a unique exit tx ID
-    let exit_txid = format!("exit_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
-    
-    // add exit tx to the history
-    let mut transactions = APP_STATE.transactions.lock().await;
-    
-    // mark original tx as cancelled
-    for tx in transactions.iter_mut() {
-        if tx.txid == vtxo_txid {
-            tx.is_settled = None;
-            break;
-        }
-    }
-    
-    // add exit tx
-    let tx = TransactionResponse {
-        txid: exit_txid.clone(),
-        // only deducting network fees (assuming it as 100 sats)
-        amount: -100, 
-        timestamp: chrono::Utc::now().timestamp(),
-        type_name: "Exit".to_string(),
-        is_settled: Some(true),
-    };
-    transactions.push(tx.clone());
-    
-    drop(transactions);
-    
-    // recalculate balance for consistency
-    APP_STATE.recalculate_balance().await?;
-    
-    Ok(tx)
+    Ok(())
 }

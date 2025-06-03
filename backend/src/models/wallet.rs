@@ -32,7 +32,7 @@ pub struct TransactionResponse {
     pub is_settled: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SendRequest {
     pub address: String,
     pub amount: u64,
@@ -52,4 +52,31 @@ pub struct ReceiveRequest {
 #[derive(Debug, Deserialize)]
 pub struct ExitRequest {
     pub vtxo_txid: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SendOnchainRequest {
+    pub address: String,
+    pub amount: u64,
+    pub priority: Option<String>, // "fastest", "fast", "normal", "slow"
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EstimateFeeDetailedRequest {
+    pub address: String,
+    pub amount: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FeeEstimateResponse {
+    pub estimates: crate::services::onchain::fee_estimator::FeeEstimates,
+    pub transaction_fees: Vec<TransactionFeeEstimate>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TransactionFeeEstimate {
+    pub priority: String,
+    pub blocks: String,
+    pub fee_rate: u64,
+    pub total_fee: u64,
 }
