@@ -351,5 +351,5 @@ curl http://localhost:3030/api/wallet/onchain-balance
 
 ### Limitations with On-chain tx:
 - ~~**Transaction History**: Currently only displays Ark-related transactions. On-chain transaction integration is pending.~~
-- **Fee Estimation**: Uses hardcoded minimum fees (160 sats for regtest). Dynamic fee estimation will be implemented.
+- ~~**Fee Estimation**: Uses hardcoded minimum fees (160 sats for regtest). Dynamic fee estimation will be implemented.~~
 - **Coin Selection**: Uses largest first algorithm.
