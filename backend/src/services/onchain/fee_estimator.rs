@@ -107,6 +107,9 @@ impl FeeEstimator {
             bitcoin::Network::Regtest => {
                 self.get_regtest_estimates().await?
             },
+            bitcoin::Network::Signet => {
+                self.try_signet_sources().await?
+            },
             _ => {
                 self.get_default_estimates()
             }
@@ -116,6 +119,18 @@ impl FeeEstimator {
         self.cache_estimates(estimates.clone());
         
         Ok(estimates)
+    }
+
+    async fn try_signet_sources(&self) -> Result<FeeEstimates> {
+        tracing::info!("Fetching signet fee estimates");
+
+        if let Ok(estimates) = self.fetch_mempool_space_estimates().await {
+            tracing::info!("Successfully fetched signet fees from mempool.space");
+            return Ok(estimates);
+        }
+
+        tracing::warn!("Signet fee sources failed, using defaults");
+        Ok(self.get_signet_estimates())
     }
 
     async fn try_multiple_sources(&self) -> Result<FeeEstimates> {
@@ -135,6 +150,7 @@ impl FeeEstimator {
         }
 
         // fallback to defaults
+        tracing::warn!("All fee sources failed, using mainnet defaults");
         Ok(self.get_default_estimates())
     }
 
@@ -142,23 +158,30 @@ impl FeeEstimator {
         let base_url = match self.network {
             bitcoin::Network::Bitcoin => "https://mempool.space",
             bitcoin::Network::Testnet => "https://mempool.space/testnet",
+            bitcoin::Network::Signet => "https://mempool.space/signet",
             _ => return Err(anyhow!("Network not supported by mempool.space")),
         };
 
         let url = format!("{}/api/v1/fees/recommended", base_url);
-        let response: MempoolSpaceFees = self.http_client
+        tracing::debug!("Fetching fees from mempool.space: {}", url);
+
+        let response = self.http_client
             .get(&url)
             .send()
-            .await?
-            .json()
             .await?;
 
+        if !response.status().is_success() {
+            return Err(anyhow!("Mempool.space API error: {}", response.status()));
+        }
+
+        let fees: MempoolSpaceFees = response.json().await?;
+
         Ok(FeeEstimates {
-            fastest: response.fastest_fee,
-            fast: response.half_hour_fee,
-            normal: response.hour_fee,
-            slow: response.economy_fee,
-            minimum: response.minimum_fee,
+            fastest: fees.fastest_fee,
+            fast: fees.half_hour_fee,
+            normal: fees.hour_fee,
+            slow: fees.economy_fee,
+            minimum: fees.minimum_fee,
             timestamp: chrono::Utc::now().timestamp(),
         })
     }
@@ -171,18 +194,24 @@ impl FeeEstimator {
         };
 
         let url = format!("{}/api/fee-estimates", base_url);
-        let response: HashMap<String, f64> = self.http_client
+        tracing::debug!("Fetching fees from blockstream: {}", url);
+
+        let response = self.http_client
             .get(&url)
             .send()
-            .await?
-            .json()
             .await?;
 
+        if !response.status().is_success() {
+            return Err(anyhow!("Blockstream API error: {}", response.status()));
+        }
+
+        let fees: HashMap<String, f64> = response.json().await?;
+
         // map block targets to fee tiers
-        let fastest = response.get("1").copied().unwrap_or(50.0) as u64;
-        let fast = response.get("3").copied().unwrap_or(30.0) as u64;
-        let normal = response.get("6").copied().unwrap_or(20.0) as u64;
-        let slow = response.get("144").copied().unwrap_or(10.0) as u64;
+        let fastest = fees.get("1").copied().unwrap_or(50.0) as u64;
+        let fast = fees.get("3").copied().unwrap_or(30.0) as u64;
+        let normal = fees.get("6").copied().unwrap_or(20.0) as u64;
+        let slow = fees.get("144").copied().unwrap_or(10.0) as u64;
 
         Ok(FeeEstimates {
             fastest,
@@ -195,21 +224,43 @@ impl FeeEstimator {
     }
 
     async fn fetch_bitcoin_core_estimates(&self) -> Result<FeeEstimates> {
-        tracing::info!("using nigiri to estimate fees");
+        let is_regtest = match self.network {
+            bitcoin::Network::Bitcoin => false,
+            bitcoin::Network::Regtest => true,
+            _ => return Err(anyhow!("Unsupported network: only regtest and mainnet are supported"))
+        };
+
+        let command_base = if is_regtest { "nigiri" } else { "bitcoin-cli" };
+        let command_args_base: Vec<String> = if is_regtest {
+            vec!["rpc", "estimatesmartfee"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        } else {
+            vec!["-named", "estimatesmartfee"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        };        
         
+        tracing::info!("Bitcoin network: {:?}", self.network);
+        tracing::info!("Using {} to estimate fees", command_base);
+
         let targets = vec![1, 3, 6, 144];
         let mut estimates = vec![];
     
         for target in targets {
             tracing::info!("Fetching fee estimate for {} blocks", target);
             
-            // change to `bitcoin-cli` if running it in regtest mode instead of `nigiri` and everything accordingly
-            let output = tokio::process::Command::new("nigiri")
-                .args(&[
-                    "rpc",
-                    "estimatesmartfee",
-                    &target.to_string(),
-                ])
+            let mut args = command_args_base.clone();
+            if is_regtest {
+                args.push(target.to_string());
+            } else {
+                args.push(format!("conf_target={}", target));
+            }
+
+            let output = tokio::process::Command::new(command_base)
+                .args(&args)
                 .output()
                 .await?;
 
@@ -311,6 +362,18 @@ impl FeeEstimator {
             timestamp: chrono::Utc::now().timestamp(),
         })
     }
+
+    fn get_signet_estimates(&self) -> FeeEstimates {
+        FeeEstimates {
+            fastest: 5,
+            fast: 3,
+            normal: 2,
+            slow: 1,
+            minimum: 1,
+            timestamp: chrono::Utc::now().timestamp(),
+        }
+    }
+
 
     fn get_default_estimates(&self) -> FeeEstimates {
         match self.network {
