@@ -1,4 +1,4 @@
-#![allow(unused_imports, unused_variables)]
+#![allow(unused_imports, unused_variables, unused_assignments, dead_code, unused_features)]
 use serde::{Deserialize, Serialize};
 use bitcoin::{opcodes::all, Amount};
 
@@ -44,17 +44,6 @@ pub struct SendResponse {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ReceiveRequest {
-    pub from_address: String,
-    pub amount: u64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ExitRequest {
-    pub vtxo_txid: String,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct SendOnchainRequest {
     pub address: String,
     pub amount: u64,
@@ -79,4 +68,47 @@ pub struct TransactionFeeEstimate {
     pub blocks: String,
     pub fee_rate: u64,
     pub total_fee: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VtxoSendRequest {
+    pub address: String,
+    pub amount: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EstimateVtxoFeeRequest {
+    pub amount: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VtxoFeeEstimateResponse {
+    pub amount: u64,
+    pub estimated_fee: u64,
+    pub total: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OffchainBalanceResponse {
+    pub confirmed: u64,
+    pub pending: u64,
+    pub expired: u64,
+    pub total: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ServiceHealthResponse {
+    pub status: String,
+    pub grpc_connected: bool,
+    pub vtxo_count: usize,
+    pub balance_confirmed: u64,
+    pub balance_pending: u64,
+    pub round_active: bool,
+    pub exit_recommendations: usize,
+    pub is_healthy: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExitRequest {
+    pub vtxo_txid: String,
 }

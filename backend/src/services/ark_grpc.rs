@@ -372,6 +372,66 @@ impl ArkGrpcService {
         }
     }
     
+    pub async fn unilateral_exit(&self, vtxo_txid: String) -> Result<crate::models::wallet::TransactionResponse> {
+        tracing::warn!("Unilateral exit is not fully implemented yet for VTXO: {}", vtxo_txid);
+        
+        // Check if the VTXO exists and is eligible for exit
+        let client = {
+            let client_opt = self.get_ark_client();
+            client_opt.as_ref().map(|c| Arc::clone(c))
+        };
+
+        if let Some(client) = client {
+            // Verify VTXO exists
+            match client.spendable_vtxos().await {
+                Ok(vtxos) => {
+                    let vtxo_found = vtxos.iter().any(|(outpoints, vtxo)| {
+                        vtxo.address().to_string() == vtxo_txid ||
+                        outpoints.iter().any(|o| o.outpoint.to_string() == vtxo_txid)
+                    });
+
+                    if !vtxo_found {
+                        return Err(anyhow!("VTXO not found: {}", vtxo_txid));
+                    }
+
+                    // For now, create a placeholder exit transaction
+                    // In a real implementation, this would:
+                    // 1. Build the unilateral exit transaction using the VTXO's exit script
+                    // 2. Sign it with the user's key
+                    // 3. Broadcast it to the Bitcoin network
+                    let exit_txid = format!("exit_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
+                    
+                    let tx = crate::models::wallet::TransactionResponse {
+                        txid: exit_txid,
+                        amount: -1000, // Placeholder amount (should be VTXO amount minus fees)
+                        timestamp: chrono::Utc::now().timestamp(),
+                        type_name: "UnilateralExit".to_string(),
+                        is_settled: Some(true),
+                    };
+
+                    // Add to transaction history
+                    let mut transactions = crate::services::APP_STATE.transactions.lock().await;
+                    transactions.push(tx.clone());
+                    drop(transactions);
+
+                    // Update app state
+                    if let Err(e) = crate::services::APP_STATE.recalculate_balance().await {
+                        tracing::error!("Failed to recalculate balance after exit: {}", e);
+                    }
+
+                    tracing::info!("Created placeholder unilateral exit transaction: {}", tx.txid);
+                    Ok(tx)
+                },
+                Err(e) => {
+                    Err(anyhow!("Failed to check VTXOs for exit: {}", e))
+                }
+            }
+        } else {
+            Err(anyhow!("Ark client not available"))
+        }
+    }
+
+    /// Check if client is connected (helper method)
     pub fn is_connected(&self) -> bool {
         let connected = self.grpc_client.is_some();
         tracing::info!("ArkGrpcService::is_connected: {}", connected);
@@ -880,25 +940,5 @@ impl ArkGrpcService {
         else {
             Err(anyhow::anyhow!("Ark client not available"))
         }
-    }
-    
-    // [TODO!!]
-    pub async fn unilateral_exit(&self, vtxo_txid: String) -> Result<crate::models::wallet::TransactionResponse> {
-        // TODO!! [implment unilateral exit]
-        tracing::warn!("Unilateral exit is not fully implemented yet");
-        
-        // [TODO!!]
-        // Dummy Tx
-        let exit_txid = format!("exit_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
-        
-        let tx = crate::models::wallet::TransactionResponse {
-            txid: exit_txid,
-            amount: -1000, // [TODO!! (modify to calcualte fee)]
-            timestamp: chrono::Utc::now().timestamp(),
-            type_name: "Exit".to_string(),
-            is_settled: Some(true),
-        };
-        
-        Ok(tx)
     }
 }

@@ -73,7 +73,6 @@ async fn main() {
         .route("/api/wallet/send", post(api::wallet::send_vtxo))
         .route("/api/wallet/available-balance", get(api::wallet::get_available_balance))
         // .route("/api/wallet/check-deposits", post(api::wallet::check_deposits))
-        .route("/api/wallet/receive", post(api::wallet::receive_vtxo))
 
         // on-chain tx
         .route("/api/wallet/onchain-balance", get(api::wallet::get_onchain_balance))
@@ -85,8 +84,11 @@ async fn main() {
         .route("/api/transactions", get(api::transactions::get_history))
         .route("/api/transactions/:txid", get(api::transactions::get_transaction))
         
-        // round participation
-        .route("/api/round/participate", post(api::transactions::participate_in_round))
+        // off-chain routes
+        .route("/api/wallet/send-vtxo", post(api::wallet::send_vtxo))
+        .route("/api/wallet/offchain-balance", get(api::wallet::get_offchain_balance))
+        .route("/api/wallet/vtxo-list", get(api::wallet::get_vtxo_list))
+        .route("/api/wallet/estimate-vtxo-fee", post(api::wallet::estimate_vtxo_fee))
 
         // unilateral exit
         .route("/api/transactions/exit", post(api::transactions::unilateral_exit))

@@ -3,6 +3,7 @@ pub mod wallet;
 pub mod transactions;
 pub mod ark_grpc;
 pub mod onchain;
+pub mod offchain;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -19,7 +20,7 @@ use crate::storage::{DbManager, KeyManager};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub client: Arc<Mutex<Option<ark_client::Client<ark_grpc::EsploraBlockchain, ark_grpc::ArkWallet>>>>,
+    // pub client: Arc<Mutex<Option<ark_client::Client<ark_grpc::EsploraBlockchain, ark_grpc::ArkWallet>>>>,
     pub grpc_client: Arc<Mutex<ark_grpc::ArkGrpcService>>,
     pub transactions: Arc<Mutex<Vec<crate::models::wallet::TransactionResponse>>>,
     pub balance: Arc<Mutex<crate::models::wallet::WalletBalance>>,
@@ -43,7 +44,7 @@ impl AppState {
         let key_manager = Arc::new(KeyManager::new(&data_dir, network));
         
         Ok(Self {
-            client: Arc::new(Mutex::new(None)),
+            // client: Arc::new(Mutex::new(None)),
             grpc_client: Arc::new(Mutex::new(ark_grpc::ArkGrpcService::new())),
             transactions: Arc::new(Mutex::new(Vec::new())),
             balance: Arc::new(Mutex::new(crate::models::wallet::WalletBalance {

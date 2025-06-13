@@ -3,7 +3,8 @@ use crate::models::wallet::*;
 use crate::services::APP_STATE;
 use crate::services::onchain::{OnChainPaymentService, FeeEstimator};
 use crate::services::onchain::fee_estimator::{FeePriority, FeeEstimates};
-use anyhow::{Result, Context};
+use crate::services::offchain::ArkOffChainService;
+use anyhow::{Result, Context, anyhow};
 use ark_core::ArkAddress;
 use bitcoin::Amount;
 use std::sync::Arc;
@@ -57,114 +58,6 @@ pub async fn get_boarding_address() -> Result<AddressResponse> {
         Err(e) => Err(anyhow::anyhow!("Failed to get boarding address: {}", e))
     }
 }
-
-pub async fn check_deposits() -> Result<serde_json::Value> {
-    let grpc_client = APP_STATE.grpc_client.lock().await;
-    
-    match grpc_client.check_deposits().await {
-        Ok(true) => {
-            APP_STATE.recalculate_balance().await?;
-            Ok(serde_json::json!({
-                "message": "Successfully processed deposits",
-                "success": true
-            }))
-        },
-        Ok(false) => Ok(serde_json::json!({
-            "message": "No deposits to process",
-            "success": false
-        })),
-        Err(e) => Err(anyhow::anyhow!("Failed to check deposits: {}", e))
-    }
-}
-
-pub async fn send_vtxo(address: String, amount: u64) -> Result<SendResponse> {
-    let available_balance = get_available_balance().await?;
-    if available_balance < amount {
-        return Err(anyhow::anyhow!(
-            "Insufficient balance: have {} available, need {}",
-            available_balance, amount
-        ));
-    }
-
-    let grpc_client = APP_STATE.grpc_client.lock().await;
-    
-    tracing::info!("Attempting to send {} satoshis to address: {}", amount, address);
-    
-    // validate the address format
-    match ArkAddress::decode(&address) {
-        Ok(ark_address) => {
-            tracing::info!("Successfully parsed Ark address");
-            
-            match grpc_client.send_vtxo(address, amount).await {
-                Ok(txid) => {
-                    tracing::info!("Successfully sent VTXO with txid: {}", txid);
-                    
-                    // create tx record
-                    let tx = TransactionResponse {
-                        txid: txid.clone(),
-                        amount: -(amount as i64),
-                        timestamp: chrono::Utc::now().timestamp(),
-                        type_name: "Redeem".to_string(),
-                        is_settled: Some(false),
-                    };
-                    
-                    // save to in-memory state
-                    let mut transactions = APP_STATE.transactions.lock().await;
-                    transactions.push(tx.clone());
-                    drop(transactions);
-                    
-                    // save to db
-                    if let Err(e) = crate::services::transactions::save_transaction_to_db(&tx).await {
-                        tracing::error!("Error saving transaction to database: {}", e);
-                    }
-                    
-                    // recalculate balance
-                    APP_STATE.recalculate_balance().await?;
-                    
-                    Ok(SendResponse { txid })
-                },
-                Err(e) => {
-                    tracing::error!("Failed to send VTXO: {}", e);
-                    Err(anyhow::anyhow!("Failed to send VTXO: {}", e))
-                }
-            }
-        },
-        Err(e) => {
-            tracing::error!("Failed to parse Ark address: {}", e);
-            Err(anyhow::anyhow!("Failed to parse Ark address: {}", e))
-        }
-    }
-}
-
-pub async fn receive_vtxo(from_address: String, amount: u64) -> Result<TransactionResponse> {
-    // unique tx ID
-    let txid = format!("rx_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
-    
-    // add tx to the history
-    let tx = TransactionResponse {
-        txid: txid.clone(),
-        amount: amount as i64, // +ve amount for incoming tx
-        timestamp: chrono::Utc::now().timestamp(),
-        type_name: "Receive".to_string(),
-        is_settled: Some(false), // initially pending
-    };
-    
-    // save to in-memory state
-    let mut transactions = APP_STATE.transactions.lock().await;
-    transactions.push(tx.clone());
-    
-    // release tx lock
-    drop(transactions);
-
-    // save to db
-    crate::services::transactions::save_transaction_to_db(&tx).await?;
-    
-    // recalculate balance for consistency
-    APP_STATE.recalculate_balance().await?;
-    
-    Ok(tx)
-}
-
 
 pub async fn get_onchain_address() -> Result<String> {
     let (keypair, _) = APP_STATE.key_manager.load_or_create_wallet()?;
@@ -229,6 +122,8 @@ pub async fn debug_vtxos() -> Result<serde_json::Value> {
     }
 }
 
+
+// onchain functions
 
 pub async fn get_onchain_balance() -> Result<u64> {
     let esplora_url = std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
@@ -351,4 +246,101 @@ pub async fn estimate_onchain_fee_detailed(
         estimates,
         transaction_fees,
     })
+}
+
+pub async fn send_vtxo(address: String, amount: u64) -> Result<String> {
+    let grpc_client = {
+        let client = APP_STATE.grpc_client.lock().await;
+        // We need to create a new ArkGrpcService since we can't clone the mutex guard
+        // For now, let's use the existing send_vtxo method from the grpc_client
+        return client.send_vtxo(address, amount).await;
+    };
+}
+
+pub async fn participate_in_round() -> Result<Option<String>> {
+    let grpc_client = APP_STATE.grpc_client.lock().await;
+    grpc_client.participate_in_round().await
+}
+
+pub async fn unilateral_exit(vtxo_id: String) -> Result<String> {
+    let grpc_client = APP_STATE.grpc_client.lock().await;
+    let tx = grpc_client.unilateral_exit(vtxo_id).await?;
+    Ok(tx.txid)
+}
+
+pub async fn check_vtxo_expiry() -> Result<()> {
+    let grpc_client = APP_STATE.grpc_client.lock().await;
+    
+    // Use existing check_deposits method as a placeholder
+    match grpc_client.check_deposits().await {
+        Ok(_) => Ok(()),
+        Err(e) => Err(anyhow!("Failed to check VTXO expiry: {}", e))
+    }
+}
+
+pub async fn get_offchain_balance_detailed() -> Result<(Amount, Amount, Amount)> {
+    // Get the client in a more explicit way to avoid lifetime issues
+    let client = {
+        let grpc_client = APP_STATE.grpc_client.lock().await;
+        let ark_client_ref = grpc_client.get_ark_client();
+        match ark_client_ref.as_ref() {
+            Some(c) => Some(Arc::clone(c)),
+            None => None,
+        }
+    }; // grpc_client lock is dropped here
+    
+    match client {
+        Some(client) => {
+            match client.offchain_balance().await {
+                Ok(balance) => {
+                    let confirmed = balance.confirmed();
+                    let pending = balance.pending();
+                    let expired = Amount::ZERO; // We don't have expired info from this API
+                    Ok((confirmed, pending, expired))
+                },
+                Err(e) => Err(anyhow!("Failed to get offchain balance: {}", e))
+            }
+        },
+        None => Err(anyhow!("Ark client not available"))
+    }
+}
+
+pub async fn get_vtxo_list() -> Result<Vec<serde_json::Value>> {
+    // Get the client in a more explicit way to avoid lifetime issues
+    let client = {
+        let grpc_client = APP_STATE.grpc_client.lock().await;
+        let ark_client_ref = grpc_client.get_ark_client();
+        match ark_client_ref.as_ref() {
+            Some(c) => Some(Arc::clone(c)),
+            None => None,
+        }
+    }; // grpc_client lock is dropped here
+    
+    match client {
+        Some(client) => {
+            match client.spendable_vtxos().await {
+                Ok(vtxos) => {
+                    let vtxo_list: Vec<serde_json::Value> = vtxos.iter().map(|(outpoints, vtxo)| {
+                        let total_amount: Amount = outpoints.iter().map(|o| o.amount).sum();
+                        serde_json::json!({
+                            "address": vtxo.address().to_string(),
+                            "amount": total_amount.to_sat(),
+                            "outpoint_count": outpoints.len(),
+                            "outpoints": outpoints.iter().map(|o| {
+                                serde_json::json!({
+                                    "outpoint": o.outpoint.to_string(),
+                                    "amount": o.amount.to_sat(),
+                                    "is_pending": o.is_pending,
+                                    "expire_at": o.expire_at
+                                })
+                            }).collect::<Vec<_>>()
+                        })
+                    }).collect();
+                    Ok(vtxo_list)
+                },
+                Err(e) => Err(anyhow!("Failed to get VTXOs: {}", e))
+            }
+        },
+        None => Err(anyhow!("Ark client not available"))
+    }
 }
