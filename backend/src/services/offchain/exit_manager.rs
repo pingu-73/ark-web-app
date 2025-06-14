@@ -12,19 +12,18 @@ impl ExitManager {
         Self { grpc_client }
     }
 
-    /// Perform unilateral exit for a VTXO
+    /// perform unilateral exit for a VTXO
     pub async fn exit_vtxo(&self, vtxo_id: String) -> Result<String> {
         tracing::info!("Starting unilateral exit for VTXO: {}", vtxo_id);
 
-        // Validate VTXO exists and is eligible for exit
+        // validate VTXO exists and is eligible for exit
         self.validate_exit_eligibility(&vtxo_id).await?;
 
-        // Use the existing unilateral_exit method from ArkGrpcService
         match self.grpc_client.unilateral_exit(vtxo_id.clone()).await {
             Ok(tx) => {
                 tracing::info!("Successfully initiated unilateral exit with txid: {}", tx.txid);
                 
-                // Update app state after exit
+                // update app state after exit
                 if let Err(e) = self.grpc_client.update_app_state().await {
                     tracing::warn!("Failed to update app state after exit: {}", e);
                 }
@@ -38,11 +37,11 @@ impl ExitManager {
         }
     }
 
-    /// Check if unilateral exit is needed (server unresponsive)
+    /// check if unilateral exit is needed (server unresponsive)
     pub async fn check_exit_conditions(&self) -> Result<Vec<ExitRecommendation>> {
         let mut recommendations = Vec::new();
 
-        // Check server responsiveness
+        // check server responsiveness
         let server_responsive = self.check_server_responsiveness().await?;
         if !server_responsive {
             recommendations.push(ExitRecommendation {
@@ -53,18 +52,18 @@ impl ExitManager {
             });
         }
 
-        // Check VTXO expiry
+        // check VTXO expiry
         let expiry_recommendations = self.check_vtxo_expiry().await?;
         recommendations.extend(expiry_recommendations);
 
-        // Check for stuck transactions
+        // check for stuck tx
         let stuck_recommendations = self.check_stuck_transactions().await?;
         recommendations.extend(stuck_recommendations);
 
         Ok(recommendations)
     }
 
-    /// Validate that a VTXO is eligible for unilateral exit
+    /// validate that VTXO is eligible for unilateral exit
     async fn validate_exit_eligibility(&self, vtxo_id: &str) -> Result<()> {
         let client = {
             let client_opt = self.grpc_client.get_ark_client();
@@ -74,7 +73,7 @@ impl ExitManager {
         if let Some(client) = client {
             match client.spendable_vtxos().await {
                 Ok(vtxos) => {
-                    // Find the VTXO
+                    // find VTXO
                     let vtxo_found = vtxos.iter().any(|(outpoints, vtxo)| {
                         vtxo.address().to_string() == vtxo_id ||
                         outpoints.iter().any(|o| o.outpoint.to_string() == vtxo_id)
@@ -84,7 +83,7 @@ impl ExitManager {
                         return Err(anyhow!("VTXO not found or not spendable: {}", vtxo_id));
                     }
 
-                    // Check if VTXO is confirmed (can't exit pending VTXOs unilaterally)
+                    // check if VTXO is confirmed (can't exit pending VTXOs unilaterally)
                     let is_confirmed = vtxos.iter().any(|(outpoints, vtxo)| {
                         (vtxo.address().to_string() == vtxo_id ||
                          outpoints.iter().any(|o| o.outpoint.to_string() == vtxo_id)) &&
@@ -104,9 +103,9 @@ impl ExitManager {
         }
     }
 
-    /// Check if the Ark server is responsive
+    /// check if the Ark server is responsive
     async fn check_server_responsiveness(&self) -> Result<bool> {
-        // Try to get server info with a timeout
+        // Try server info with a timeout
         let timeout_duration = std::time::Duration::from_secs(10);
         
         match tokio::time::timeout(timeout_duration, self.test_server_connection()).await {
@@ -125,11 +124,8 @@ impl ExitManager {
         }
     }
 
-    /// Test server connection
     async fn test_server_connection(&self) -> Result<()> {
-        // Fixed: Access the grpc_client field correctly
         if self.grpc_client.is_connected() {
-            // Try to get address as a simple connectivity test
             match self.grpc_client.get_address().await {
                 Ok(_) => Ok(()),
                 Err(e) => Err(anyhow!("Server test failed: {}", e))
@@ -139,7 +135,7 @@ impl ExitManager {
         }
     }
 
-    /// Check VTXOs approaching expiry
+    /// check VTXOs approaching expiry
     async fn check_vtxo_expiry(&self) -> Result<Vec<ExitRecommendation>> {
         let mut recommendations = Vec::new();
         let now = Utc::now().timestamp() as u64;
@@ -185,11 +181,11 @@ impl ExitManager {
         Ok(recommendations)
     }
 
-    /// Check for stuck transactions that might need unilateral exit
+    /// check for stuck tx that might need unilateral exit
     async fn check_stuck_transactions(&self) -> Result<Vec<ExitRecommendation>> {
         let mut recommendations = Vec::new();
         
-        // Check app state for pending transactions that have been stuck too long
+        // check app state for pending tx that have been stuck too long
         let transactions = crate::services::APP_STATE.transactions.lock().await;
         let now = Utc::now().timestamp();
         let stuck_threshold = 3600; // 1 hour
@@ -211,17 +207,17 @@ impl ExitManager {
         Ok(recommendations)
     }
 
-    /// Estimate the cost of unilateral exit
+    /// estimate the cost of unilateral exit
     async fn estimate_exit_cost(&self, vtxo_amount: Amount) -> Result<Amount> {
-        // Simplified cost estimation
-        // In reality, this would depend on current fee rates and transaction size
-        let base_cost = Amount::from_sat(2000); // Base transaction cost
+        // [TODO!!]
+        // should depend on current fee rates and tx size
+        let base_cost = Amount::from_sat(2000); // Base rx cost
         let percentage_cost = Amount::from_sat(vtxo_amount.to_sat() / 1000); // 0.1% of amount
         
         Ok(base_cost + percentage_cost)
     }
 
-    /// Perform emergency exit for all VTXOs
+    /// perform emergency exit for all VTXOs
     pub async fn emergency_exit_all(&self) -> Result<Vec<String>> {
         tracing::warn!("Performing emergency exit for all VTXOs");
         

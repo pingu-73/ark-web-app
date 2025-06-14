@@ -12,7 +12,6 @@ impl ArkTransactionBuilder {
         Self { grpc_client }
     }
 
-    /// Build VTXO transfer transaction
     pub async fn build_vtxo_transfer(
         &self,
         to_address: ArkAddress,
@@ -20,17 +19,14 @@ impl ArkTransactionBuilder {
     ) -> Result<String> {
         tracing::info!("Building VTXO transfer: {} sats to {}", amount.to_sat(), to_address);
 
-        // Validate address format
         if to_address.to_string().is_empty() {
             return Err(anyhow!("Invalid Ark address"));
         }
 
-        // Validate amount
         if amount == Amount::ZERO {
             return Err(anyhow!("Amount must be greater than zero"));
         }
 
-        // Use the existing send_vtxo implementation
         match self.grpc_client.send_vtxo(to_address.to_string(), amount.to_sat()).await {
             Ok(txid) => {
                 tracing::info!("Successfully built VTXO transfer with txid: {}", txid);
@@ -43,7 +39,6 @@ impl ArkTransactionBuilder {
         }
     }
 
-    /// Build redeem transaction for multiple outputs
     pub async fn build_redeem_transaction(
         &self,
         outputs: Vec<(ArkAddress, Amount)>,
@@ -60,34 +55,29 @@ impl ArkTransactionBuilder {
         self.build_vtxo_transfer(address.clone(), *amount).await
     }
 
-    /// Estimate fees for VTXO transaction
     pub async fn estimate_vtxo_fee(&self, amount: Amount) -> Result<Amount> {
-        // VTXO transactions typically have very low fees
-        // This is a simplified estimation
+        // [TODO!!!]
         let base_fee = Amount::from_sat(100); // Base fee in sats
         let amount_fee = Amount::from_sat(amount.to_sat() / 10000); // 0.01% of amount
         
         Ok(base_fee + amount_fee)
     }
 
-    /// Validate transaction parameters
     pub fn validate_transaction_params(
         &self,
         address: &ArkAddress,
         amount: Amount,
     ) -> Result<()> {
-        // Validate address
         if address.to_string().is_empty() {
             return Err(anyhow!("Invalid Ark address"));
         }
 
-        // Validate amount
         if amount == Amount::ZERO {
             return Err(anyhow!("Amount must be greater than zero"));
         }
 
-        // Check minimum amount (dust limit for VTXOs)
-        let min_amount = Amount::from_sat(546); // Standard dust limit
+        // dust limit for VTXOs
+        let min_amount = Amount::from_sat(546);
         if amount < min_amount {
             return Err(anyhow!("Amount {} is below minimum {}", amount, min_amount));
         }
@@ -95,7 +85,6 @@ impl ArkTransactionBuilder {
         Ok(())
     }
 
-    /// Prepare transaction for signing
     pub async fn prepare_transaction(
         &self,
         to_address: ArkAddress,

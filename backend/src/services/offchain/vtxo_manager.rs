@@ -37,7 +37,6 @@ impl VtxoManager {
         }
     }
 
-    /// Get all spendable VTXOs
     pub async fn get_spendable_vtxos(&self) -> Result<Vec<VtxoState>> {
         let client = {
             let client_opt = self.grpc_client.get_ark_client();
@@ -77,7 +76,7 @@ impl VtxoManager {
                         vtxo_states.push(vtxo_state);
                     }
 
-                    // Update cache
+                    // update cache
                     {
                         let mut cache = self.vtxo_cache.write();
                         cache.clear();
@@ -99,7 +98,6 @@ impl VtxoManager {
         }
     }
 
-    /// Check VTXO expiry and trigger renewal if needed
     pub async fn check_expiry_and_renew(&self) -> Result<()> {
         let vtxos = self.get_spendable_vtxos().await?;
         let now = Utc::now().timestamp() as u64;
@@ -143,13 +141,11 @@ impl VtxoManager {
         Ok(())
     }
 
-    /// Get VTXO by address
     pub fn get_vtxo_by_address(&self, address: &str) -> Option<VtxoState> {
         let cache = self.vtxo_cache.read();
         cache.get(address).cloned()
     }
 
-    /// Get total balance breakdown
     pub fn get_balance_breakdown(&self) -> (Amount, Amount, Amount) {
         let cache = self.vtxo_cache.read();
         let mut confirmed = Amount::ZERO;
@@ -168,7 +164,6 @@ impl VtxoManager {
         (confirmed, pending, expired)
     }
 
-    /// Mark VTXO as spent
     pub fn mark_vtxo_spent(&self, address: &str) {
         let mut cache = self.vtxo_cache.write();
         if let Some(vtxo) = cache.get_mut(address) {

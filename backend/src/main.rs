@@ -8,6 +8,7 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
@@ -30,77 +31,88 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
     
-    // create data directory if it doesn't exist
     let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string());
     std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
 
-    // initialize Ark client
-    match services::APP_STATE.initialize().await {
-        Ok(_) => tracing::info!("Ark client initialized successfully"),
-        Err(e) => tracing::error!("Failed to initialize Ark client: {}", e),
+    // initialize global APP_STATE first
+    match services::initialize_app_state().await {
+        Ok(_) => tracing::info!("APP_STATE initialized successfully"),
+        Err(e) => tracing::error!("Failed to initialize APP_STATE: {}", e),
     }
+    
+    // initialize db
+    let db_path = format!("{}/arkive.db", data_dir);
+    let db_manager = Arc::new(storage::DbManager::new(&db_path).await.unwrap());
 
-    let app_state = services::APP_STATE.clone();
-    tokio::spawn(async move {
-        loop {
-            // Sync every 30 seconds
-            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                
-            let grpc_client = app_state.grpc_client.lock().await;
-            if grpc_client.is_connected() {
-                match grpc_client.update_app_state().await {
-                    Ok(_) => tracing::debug!("Successfully synced app state with Ark client"),
-                    Err(e) => tracing::warn!("Failed to sync app state with Ark client: {}", e),
-                }
-            }
-        }
-    });
+    // initialize multi-wallet manager
+    let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".to_string()).as_str() {
+        "mainnet" => bitcoin::Network::Bitcoin,
+        "testnet" => bitcoin::Network::Testnet,
+        "signet" => bitcoin::Network::Signet,
+        _ => bitcoin::Network::Regtest,
+    };
+    
+    let ark_server_url = std::env::var("ARK_SERVER_URL")
+        .unwrap_or_else(|_| "http://localhost:7070".to_string());
+    
+    let wallet_manager = Arc::new(
+        services::multi_wallet::MultiWalletManager::new(
+            db_manager.clone(),
+            network,
+            ark_server_url,
+        )
+    );
+    
+    let esplora_url = std::env::var("ESPLORA_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string());
+    
+    let faucet_service = Arc::new(
+        services::faucet::FaucetService::new(esplora_url, network)
+    );
+    
+    // create API state
+    let api_state = api::multi_wallet::ApiState {
+        wallet_manager: wallet_manager.clone(),
+        faucet_service: faucet_service.clone(),
+    };
 
-    // CORS layer
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
-
-    let app = Router::new()
-        // wallet routes
-        .route("/api/wallet/info", get(api::wallet::get_info))
-        .route("/api/wallet/balance", get(api::wallet::get_balance))
-        .route("/api/wallet/address", get(api::wallet::get_address))
-        .route("/api/wallet/boarding-address", get(api::wallet::get_boarding_address))
-        .route("/api/wallet/onchain-address", get(api::wallet::get_onchain_address))
-        .route("/api/wallet/send", post(api::wallet::send_vtxo))
-        .route("/api/wallet/available-balance", get(api::wallet::get_available_balance))
-        // .route("/api/wallet/check-deposits", post(api::wallet::check_deposits))
-
-        // on-chain tx
-        .route("/api/wallet/onchain-balance", get(api::wallet::get_onchain_balance))
-        .route("/api/wallet/fee-estimates", get(api::wallet::get_fee_estimates_detailed))
-        .route("/api/wallet/estimate-transaction-fees", post(api::wallet::estimate_transaction_fees))
-        .route("/api/wallet/send-onchain", post(api::wallet::send_onchain_with_priority))
+        let app = Router::new()
+        // Multi-wallet management
+        .route("/api/wallets", post(api::multi_wallet::create_wallet))
+        .route("/api/wallets", get(api::multi_wallet::list_wallets))
+        .route("/api/wallets/:wallet_id", get(api::multi_wallet::get_wallet_info))
         
-        // tx routes
-        .route("/api/transactions", get(api::transactions::get_history))
-        .route("/api/transactions/:txid", get(api::transactions::get_transaction))
+        // Balance endpoints
+        .route("/api/wallets/:wallet_id/balance", get(api::multi_wallet::get_wallet_balance))
+        .route("/api/wallets/:wallet_id/balance/onchain", get(api::multi_wallet::get_onchain_balance))
+        .route("/api/wallets/:wallet_id/balance/offchain", get(api::multi_wallet::get_offchain_balance))
         
-        // off-chain routes
-        .route("/api/wallet/send-vtxo", post(api::wallet::send_vtxo))
-        .route("/api/wallet/offchain-balance", get(api::wallet::get_offchain_balance))
-        .route("/api/wallet/vtxo-list", get(api::wallet::get_vtxo_list))
-        .route("/api/wallet/estimate-vtxo-fee", post(api::wallet::estimate_vtxo_fee))
-
-        // unilateral exit
-        .route("/api/transactions/exit", post(api::transactions::unilateral_exit))
-
-        // debug
-        .route("/api/debug/vtxos", get(api::wallet::debug_vtxos))
+        // Off-chain operations
+        .route("/api/wallets/:wallet_id/send-vtxo", post(api::multi_wallet::send_vtxo))
+        .route("/api/wallets/:wallet_id/vtxos", get(api::multi_wallet::get_vtxo_list))
+        .route("/api/wallets/:wallet_id/participate-round", post(api::multi_wallet::participate_in_round))
         
-        // add middleware
+        // On-chain operations
+        .route("/api/wallets/:wallet_id/send-onchain", post(api::multi_wallet::send_onchain))
+        .route("/api/wallets/:wallet_id/fee-estimates", get(api::multi_wallet::get_fee_estimates))
+        .route("/api/wallets/:wallet_id/estimate-fee", post(api::multi_wallet::estimate_transaction_fee))
+        
+        // Transaction history
+        .route("/api/wallets/:wallet_id/transactions", get(api::multi_wallet::get_transaction_history))
+        
+        // Faucet
+        .route("/api/faucet", post(api::multi_wallet::faucet_request))
+        .route("/api/faucet/info", get(api::multi_wallet::get_faucet_info))
+        
+        .with_state(api_state)
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
-    // run the server
     let port = std::env::var("PORT")
         .unwrap_or_else(|_| "3000".to_string())
         .parse::<u16>()
@@ -109,7 +121,7 @@ async fn main() {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await.unwrap();
     
-    tracing::info!("listening on {}", addr);
+    tracing::info!("Multi-wallet ARKive server listening on {}", addr);
     
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

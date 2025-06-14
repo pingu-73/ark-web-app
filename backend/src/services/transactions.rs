@@ -154,7 +154,7 @@ pub async fn get_transaction(txid: String) -> Result<TransactionResponse> {
 }
 
 pub async fn save_transaction_to_db(tx: &crate::models::wallet::TransactionResponse) -> Result<()> {
-    let conn = APP_STATE.db_manager.get_conn()?;
+    let conn = APP_STATE.db_manager.get_conn().await?;
     
     conn.execute(
         "INSERT OR REPLACE INTO transactions (

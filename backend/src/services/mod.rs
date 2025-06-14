@@ -4,7 +4,10 @@ pub mod transactions;
 pub mod ark_grpc;
 pub mod onchain;
 pub mod offchain;
+pub mod faucet;
+pub mod multi_wallet;
 
+use tokio::sync::OnceCell;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -29,7 +32,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new() -> Result<Self> {
+    pub async fn new() -> Result<Self> {
         let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".to_string()).as_str() {
             "mainnet" => Network::Bitcoin,
             "testnet" => Network::Testnet,
@@ -40,7 +43,7 @@ impl AppState {
         // initialize storage
         let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string());
         let db_path = format!("{}/ark.db", data_dir);
-        let db_manager = Arc::new(DbManager::new(&db_path)?);
+        let db_manager = Arc::new(DbManager::new(&db_path).await?);
         let key_manager = Arc::new(KeyManager::new(&data_dir, network));
         
         Ok(Self {
@@ -150,7 +153,7 @@ impl AppState {
         
         // save balance to db
         let balance_json = serde_json::to_string(&*balance)?;
-        self.db_manager.save_setting("balance", &balance_json)?;
+        self.db_manager.save_setting("balance", &balance_json).await?;
         
         tracing::info!(
             "Recalculated balance: confirmed={}, trusted_pending={}, untrusted_pending={}, total={}",
@@ -167,6 +170,38 @@ impl AppState {
 }
 
 // initialize global state
-lazy_static::lazy_static! {
-    pub static ref APP_STATE: AppState = AppState::new().expect("Failed to initialize app state");
+// lazy_static::lazy_static! {
+//     pub static ref APP_STATE: AppState = AppState::new().expect("Failed to initialize app state");
+// }
+// Global state using OnceCell
+static APP_STATE_CELL: OnceCell<AppState> = OnceCell::const_new();
+
+// Helper function to get APP_STATE
+pub async fn get_app_state() -> &'static AppState {
+    APP_STATE_CELL.get_or_init(|| async {
+        AppState::new().await.expect("Failed to initialize app state")
+    }).await
+}
+
+// Create a struct that implements Deref to AppState for backward compatibility
+pub struct AppStateRef;
+
+impl std::ops::Deref for AppStateRef {
+    type Target = AppState;
+
+    fn deref(&self) -> &Self::Target {
+        // This is a bit of a hack, but it allows synchronous access
+        // We'll need to ensure APP_STATE is initialized before any sync access
+        APP_STATE_CELL.get().expect("APP_STATE not initialized - call initialize_app_state() first")
+    }
+}
+
+// Export APP_STATE for backward compatibility
+pub static APP_STATE: AppStateRef = AppStateRef;
+
+// Initialization function to call from main.rs
+pub async fn initialize_app_state() -> Result<()> {
+    let app_state = get_app_state().await;
+    app_state.initialize().await?;
+    Ok(())
 }

@@ -14,25 +14,25 @@ impl SubscriptionManager {
         Self { grpc_client }
     }
 
-    /// Subscribe to script updates (placeholder for when API is available)
     pub async fn subscribe_to_scripts(&self) -> Result<Pin<Box<dyn Stream<Item = ScriptUpdate> + Send>>> {
+        // [TODO!!]
         tracing::info!("Starting script subscription");
         
         let (tx, rx) = mpsc::channel(100);
         let grpc_client = self.grpc_client.clone();
         
-        // Spawn background task to simulate script updates
+        // spawn bg task to simulate script updates
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             
             loop {
                 interval.tick().await;
                 
-                // Check for updates
+                // check for updates
                 if let Ok(updates) = Self::check_script_updates(&grpc_client).await {
                     for update in updates {
                         if tx.send(update).await.is_err() {
-                            break; // Receiver dropped
+                            break; // receiver dropped
                         }
                     }
                 }
@@ -42,7 +42,6 @@ impl SubscriptionManager {
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
-    /// List VTXOs using current API
     pub async fn list_vtxos(&self, address: &str) -> Result<Vec<VtxoInfo>> {
         tracing::debug!("Listing VTXOs for address: {}", address);
         
@@ -57,7 +56,7 @@ impl SubscriptionManager {
                     let mut vtxo_infos = Vec::new();
                     
                     for (outpoints, vtxo) in vtxos {
-                        // Filter by address if specified
+                        // filter by address
                         if address.is_empty() || vtxo.address().to_string() == address {
                             for outpoint in outpoints {
                                 vtxo_infos.push(VtxoInfo {
@@ -84,7 +83,6 @@ impl SubscriptionManager {
         }
     }
 
-    /// Get VTXO updates for a specific address
     pub async fn get_vtxo_updates(&self, address: &str) -> Result<Vec<VtxoUpdate>> {
         let vtxos = self.list_vtxos(address).await?;
         let mut updates = Vec::new();
@@ -100,7 +98,6 @@ impl SubscriptionManager {
         Ok(updates)
     }
 
-    /// Monitor VTXO changes
     pub async fn monitor_vtxo_changes(&self) -> Result<Pin<Box<dyn Stream<Item = VtxoUpdate> + Send>>> {
         let (tx, rx) = mpsc::channel(100);
         let grpc_client = self.grpc_client.clone();
@@ -112,9 +109,9 @@ impl SubscriptionManager {
             loop {
                 interval.tick().await;
                 
-                // Get current VTXO state
+                // current VTXO state
                 if let Ok(current_vtxos) = Self::get_current_vtxo_state(&grpc_client).await {
-                    // Compare with last state and send updates
+                    // cmp with last state and send updates
                     for (key, vtxo) in &current_vtxos {
                         if let Some(last_vtxo) = last_state.get(key) {
                             if vtxo != last_vtxo {
@@ -129,7 +126,7 @@ impl SubscriptionManager {
                                 }
                             }
                         } else {
-                            // New VTXO
+                            // new VTXO
                             let update = VtxoUpdate {
                                 vtxo_info: vtxo.clone(),
                                 update_type: VtxoUpdateType::Created,
@@ -142,7 +139,7 @@ impl SubscriptionManager {
                         }
                     }
                     
-                    // Check for removed VTXOs
+                    // check for removed VTXOs
                     for (key, vtxo) in &last_state {
                         if !current_vtxos.contains_key(key) {
                             let update = VtxoUpdate {
@@ -165,14 +162,11 @@ impl SubscriptionManager {
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
-    /// Check for script updates (internal helper)
     async fn check_script_updates(grpc_client: &Arc<crate::services::ark_grpc::ArkGrpcService>) -> Result<Vec<ScriptUpdate>> {
-        // This would use the SubscribeToScripts API when available
-        // For now, return empty updates
+        // [TODO!!!]
         Ok(Vec::new())
     }
 
-    /// Get current VTXO state (internal helper)
     async fn get_current_vtxo_state(grpc_client: &Arc<crate::services::ark_grpc::ArkGrpcService>) -> Result<std::collections::HashMap<String, VtxoInfo>> {
         let mut state = std::collections::HashMap::new();
         
@@ -203,7 +197,6 @@ impl SubscriptionManager {
         Ok(state)
     }
 
-    /// Subscribe to balance changes
     pub async fn subscribe_to_balance_changes(&self) -> Result<Pin<Box<dyn Stream<Item = BalanceUpdate> + Send>>> {
         let (tx, rx) = mpsc::channel(100);
         let grpc_client = self.grpc_client.clone();
@@ -215,7 +208,7 @@ impl SubscriptionManager {
             loop {
                 interval.tick().await;
                 
-                // Get current balance
+                // current balance
                 if let Ok((confirmed, pending)) = Self::get_current_balance(&grpc_client).await {
                     if (confirmed, pending) != last_balance {
                         let update = BalanceUpdate {
@@ -238,7 +231,6 @@ impl SubscriptionManager {
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
-    /// Get current balance (internal helper)
     async fn get_current_balance(grpc_client: &Arc<crate::services::ark_grpc::ArkGrpcService>) -> Result<(bitcoin::Amount, bitcoin::Amount)> {
         let client = {
             let client_opt = grpc_client.get_ark_client();

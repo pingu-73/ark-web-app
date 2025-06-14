@@ -11,8 +11,7 @@ impl ScriptManager {
         Self
     }
 
-    /// Create CSV signature script (exit path with timelock)
-    /// Based on your mentor's csv_sig_script pattern
+    // CSV signature script (exit path with timelock)
     pub fn csv_sig_script(
         &self,
         locktime: Sequence,
@@ -21,7 +20,7 @@ impl ScriptManager {
     ) -> ScriptBuf {
         ScriptBuf::builder()
             .push_int(locktime.to_consensus_u32() as i64)
-            .push_opcode(opcodes::all::OP_CSV)  // Using OP_CSV instead of OP_CHECKSEQUENCEVERIFY
+            .push_opcode(opcodes::all::OP_CSV) 
             .push_opcode(opcodes::all::OP_DROP)
             .push_x_only_key(&user_pk)
             .push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
@@ -30,8 +29,7 @@ impl ScriptManager {
             .into_script()
     }
 
-    /// Create multisig script (collaborative path)
-    /// Based on your mentor's multisig_script pattern
+    // multisig script (collaborative path)
     pub fn multisig_script(
         &self,
         user_pk: XOnlyPublicKey,
@@ -45,8 +43,8 @@ impl ScriptManager {
             .into_script()
     }
 
-    /// Create 3-party multisig script (user + counterparty + server)
-    /// Based on your mentor's pattern: Alice checksigverify Bob checksigverify Server checksig
+    // 3-party multisig script (user + counterparty + server)
+    // pattern: Alice checksigverify Bob checksigverify Server checksig
     pub fn three_party_multisig_script(
         &self,
         pk_0: XOnlyPublicKey,
@@ -63,8 +61,8 @@ impl ScriptManager {
             .into_script()
     }
 
-    /// Create multi_a script (checksigadd variant from arkade-os tapscripts)
-    /// Based on the tapscripts vtxo example: multi_a(2, pk1, pk2)
+    // multi_a script (checksigadd variant from arkade-os tapscripts)
+    // refer arkade-os/tapscripts vtxo example: multi_a(2, pk1, pk2)
     pub fn multi_a_script(
         &self,
         threshold: u8,
@@ -81,8 +79,8 @@ impl ScriptManager {
             .into_script()
     }
 
-    /// Create simple exit script (user-only with CSV delay)
-    /// Based on arkade-os tapscripts: and_v(v:pk(user), older(delay))
+    // simple exit script (user-only with CSV delay)
+    // refer arkade-os/tapscripts vtxo example: and_v(v:pk(user), older(delay))
     pub fn create_exit_script(
         &self,
         user_pk: XOnlyPublicKey,
@@ -99,8 +97,8 @@ impl ScriptManager {
         Ok(script)
     }
 
-    /// Create checksigverify script (preferred for n-of-n)
-    /// A checksigverify B checksigverify (without final checksig)
+    // checksigverify script (preferred for n-of-n)
+    // pattern: A checksigverify B checksigverify (without final checksig)
     pub fn create_checksigverify_script(
         &self,
         user_pk: XOnlyPublicKey,
@@ -111,8 +109,8 @@ impl ScriptManager {
         Ok(script)
     }
 
-    /// Create checksigadd script (threshold support)
-    /// A checksig B checksigadd 2 numequal
+    // checksigadd script (threshold support)
+    // pattern: A checksig B checksigadd 2 numequal
     pub fn create_checksigadd_script(
         &self,
         user_pk: XOnlyPublicKey,
@@ -123,8 +121,7 @@ impl ScriptManager {
         Ok(script)
     }
 
-    /// Build complete funding transaction script (based on your mentor's pattern)
-    /// Creates a taproot script with forfeit and redeem leaves
+    // taproot script with forfeit and redeem leaves
     pub fn build_funding_transaction_script(
         &self,
         user_pk: XOnlyPublicKey,
@@ -162,57 +159,78 @@ impl ScriptManager {
         Ok(script)
     }
 
-    /// Create VTXO script based on arkade-os tapscripts pattern
-    /// Uses multi_a for collaborative path and simple exit for unilateral path
-    pub fn create_vtxo_script_arkade_style(
+    // VTXO script (forfeit + exit paths)
+    pub fn create_vtxo_script(
         &self,
         user_pk: XOnlyPublicKey,
         server_pk: XOnlyPublicKey,
         exit_delay: u32,
     ) -> Result<(ScriptBuf, ScriptBuf)> {
-        // Collaborative path: multi_a(2, user, server)
-        let collaborative_script = self.multi_a_script(2, user_pk, server_pk);
-        
-        // Exit path: and_v(v:pk(user), older(delay))
-        let exit_script = self.create_exit_script(user_pk, exit_delay)?;
-
-        tracing::debug!("Created arkade-style VTXO script set");
-        Ok((collaborative_script, exit_script))
-    }
-
-    /// Create shared output script for unrolling
-    /// Based on arkade-os tapscripts unroll pattern
-    pub fn create_shared_output_script(
-        &self,
-        server_pk: XOnlyPublicKey,
-        sweep_delay: u32,
-    ) -> Result<ScriptBuf> {
-        // This would use Elements introspection opcodes in a real implementation
-        // For now, create a simple sweep script
-        let sweep_script = ScriptBuf::builder()
-            .push_x_only_key(&server_pk)
+        // Forfeit path: user CHECKSIGVERIFY server CHECKSIG
+        let forfeit_script = ScriptBuf::builder()
+            .push_x_only_key(&user_pk)
             .push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
-            .push_int(sweep_delay as i64)
-            .push_opcode(opcodes::all::OP_CSV)
+            .push_x_only_key(&server_pk)
+            .push_opcode(opcodes::all::OP_CHECKSIG)
             .into_script();
 
-        tracing::debug!("Created shared output script with sweep delay: {}", sweep_delay);
-        Ok(sweep_script)
+        // Exit path: delay CSV DROP user CHECKSIG (not CHECKSIGVERIFY)
+        let exit_script = ScriptBuf::builder()
+            .push_int(exit_delay as i64)
+            .push_opcode(opcodes::all::OP_CSV)
+            .push_opcode(opcodes::all::OP_DROP)
+            .push_x_only_key(&user_pk)
+            .push_opcode(opcodes::all::OP_CHECKSIG)
+            .into_script();
+
+        Ok((forfeit_script, exit_script))
     }
 
-    /// Validate script parameters
+    // shared output script for VTXO tree
+    pub fn create_shared_output_script(
+        &self,
+        participants: &[XOnlyPublicKey],
+        server_pk: XOnlyPublicKey,
+        sweep_delay: u32,
+    ) -> Result<(ScriptBuf, ScriptBuf)> {
+        // Unroll path: n-of-n multisig of all participants
+        let mut unroll_script = ScriptBuf::builder();
+        
+        // add all participant keys with CHECKSIGVERIFY (except last)
+        for (i, pk) in participants.iter().enumerate() {
+            unroll_script = unroll_script.push_x_only_key(pk);
+            if i < participants.len() - 1 {
+                unroll_script = unroll_script.push_opcode(opcodes::all::OP_CHECKSIGVERIFY);
+            } else {
+                unroll_script = unroll_script.push_opcode(opcodes::all::OP_CHECKSIG);
+            }
+        }
+        
+        let unroll_script = unroll_script.into_script();
+
+        // Sweep path: server after timeout
+        let sweep_script = ScriptBuf::builder()
+            .push_int(sweep_delay as i64)
+            .push_opcode(opcodes::all::OP_CSV)
+            .push_opcode(opcodes::all::OP_DROP)
+            .push_x_only_key(&server_pk)
+            .push_opcode(opcodes::all::OP_CHECKSIG)
+            .into_script();
+
+        Ok((unroll_script, sweep_script))
+    }
+
     pub fn validate_script_params(
         &self,
         user_pk: &XOnlyPublicKey,
         server_pk: &XOnlyPublicKey,
         delay: u32,
     ) -> Result<()> {
-        // Validate public keys are not the same
         if user_pk == server_pk {
             return Err(anyhow!("User and server public keys cannot be the same"));
         }
 
-        // Validate delay is reasonable (between 1 hour and 1 month)
+        // delay is reasonable (between 1 hour and 1 month)
         if delay < 3600 || delay > 2592000 {
             return Err(anyhow!("Exit delay must be between 1 hour and 30 days"));
         }
@@ -220,9 +238,9 @@ impl ScriptManager {
         Ok(())
     }
 
-    /// Get script type preference based on configuration
+    // script type preference based on configuration
     pub fn get_preferred_script_type(&self) -> ScriptType {
-        // For n-of-n multisig, checksigverify is preferred
+        // for n-of-n multisig, checksigverify is preferred
         ScriptType::CheckSigVerify
     }
 }
