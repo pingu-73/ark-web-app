@@ -17,9 +17,63 @@ pub struct WalletInstance {
     pub grpc_client: Arc<crate::services::ark_grpc::ArkGrpcService>,
     pub offchain_service: Arc<crate::services::offchain::ArkOffChainService>,
     pub created_at: i64,
+    pub network: Network,
+    pub server_info: Option<ark_core::server::Info>,
 }
 
 impl WalletInstance {
+    pub fn get_onchain_address(&self) -> Result<String> {
+        let pubkey = self.keypair.public_key();
+        let pubkey_bytes = pubkey.serialize();
+        let wpkh = bitcoin::key::CompressedPublicKey::from_slice(&pubkey_bytes)
+            .map_err(|e| anyhow!("Failed to create WPKH: {}", e))?;
+        let address = bitcoin::Address::p2wpkh(&wpkh, self.network);
+        Ok(address.to_string())
+    }
+
+    pub fn get_boarding_address(&self) -> Result<String> {
+        let server_info = self
+            .server_info
+            .as_ref()
+            .ok_or_else(|| anyhow!("Server info not available"))?;
+
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let (server_pk, _) = server_info.pk.x_only_public_key();
+        let (owner_pk, _) = self.keypair.x_only_public_key();
+
+        let boarding_output = ark_core::BoardingOutput::new(
+            &secp,
+            server_pk,
+            owner_pk,
+            server_info.unilateral_exit_delay,
+            self.network,
+        )?;
+
+        Ok(boarding_output.address().to_string())
+    }
+
+    pub fn get_ark_address(&self) -> Result<String> {
+        let server_info = self
+            .server_info
+            .as_ref()
+            .ok_or_else(|| anyhow!("Server info not available"))?;
+
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let (server_pk, _) = server_info.pk.x_only_public_key();
+        let (owner_pk, _) = self.keypair.x_only_public_key();
+
+        let vtxo = ark_core::Vtxo::new_default(
+            &secp,
+            server_pk,
+            owner_pk,
+            server_info.unilateral_exit_delay,
+            self.network,
+        )
+        .map_err(|e| anyhow!("Failed to create VTXO: {}", e))?;
+
+        Ok(vtxo.to_ark_address().to_string())
+    }
+
     pub fn get_mnemonic(&self) -> Result<String> {
         // [TODO!!!]
         todo!("Store mnemonic during wallet creation")
@@ -219,6 +273,11 @@ impl MultiWalletManager {
         grpc_client.connect(&self.ark_server_url).await?;
         let grpc_client = Arc::new(grpc_client);
 
+        let server_info = match grpc_client.get_ark_client().as_ref() {
+            Some(client) => Some(client.server_info.clone()),
+            None => None,
+        };
+
         let offchain_service = Arc::new(crate::services::offchain::ArkOffChainService::new(
             grpc_client.clone(),
         ));
@@ -232,6 +291,8 @@ impl MultiWalletManager {
             grpc_client,
             offchain_service,
             created_at: chrono::Utc::now().timestamp(),
+            network: self.network,
+            server_info,
         };
 
         // add to memory
@@ -267,6 +328,8 @@ impl MultiWalletManager {
                     grpc_client: wallet.grpc_client.clone(),
                     offchain_service: wallet.offchain_service.clone(),
                     created_at: wallet.created_at,
+                    network: wallet.network,
+                    server_info: wallet.server_info.clone(),
                 }));
             }
         }
@@ -313,9 +376,9 @@ impl MultiWalletManager {
     pub async fn get_wallet_addresses(&self, wallet_id: &str) -> Result<WalletAddresses> {
         let wallet = self.get_wallet(wallet_id).await?;
 
-        let onchain = wallet.grpc_client.get_onchain_address().await?;
-        let offchain = wallet.grpc_client.get_address().await?;
-        let boarding = wallet.grpc_client.get_boarding_address().await?;
+        let onchain = wallet.get_onchain_address()?;
+        let offchain = wallet.get_ark_address()?;
+        let boarding = wallet.get_boarding_address()?;
 
         Ok(WalletAddresses {
             onchain,
@@ -380,6 +443,11 @@ impl MultiWalletManager {
             grpc_client.clone(),
         ));
 
+        let server_info = match grpc_client.get_ark_client().as_ref() {
+            Some(client) => Some(client.server_info.clone()),
+            None => None,
+        };
+
         let wallet_instance = WalletInstance {
             wallet_id: wallet_id.to_string(),
             name,
@@ -387,6 +455,8 @@ impl MultiWalletManager {
             grpc_client,
             offchain_service,
             created_at,
+            network: self.network,
+            server_info,
         };
 
         // cache it
@@ -442,6 +512,8 @@ mod tests {
                 Arc::new(crate::services::ark_grpc::ArkGrpcService::new()),
             )),
             created_at: 0,
+            network: bitcoin::Network::Regtest,
+            server_info: None,
         };
 
         let hex_key = wallet.get_private_key_hex();
