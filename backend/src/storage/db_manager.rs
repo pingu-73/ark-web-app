@@ -1,6 +1,6 @@
 #![allow(unused_features, dead_code)]
-use anyhow::{Result, anyhow};
-use rusqlite::{Connection, params};
+use anyhow::{anyhow, Result};
+use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -16,19 +16,19 @@ impl DbManager {
         }
 
         let conn = Connection::open(db_path)?;
-        
+
         let manager = Self {
             conn: Arc::new(Mutex::new(conn)),
         };
-        
+
         manager.init_schema().await?;
-        
+
         Ok(manager)
     }
 
     async fn init_schema(&self) -> Result<()> {
         let conn = self.conn.lock().await;
-        
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallets (
                 wallet_id TEXT PRIMARY KEY,
@@ -126,27 +126,27 @@ impl DbManager {
     pub async fn get_conn(&self) -> Result<tokio::sync::MutexGuard<'_, Connection>> {
         Ok(self.conn.lock().await)
     }
-    
+
     pub async fn save_setting(&self, key: &str, value: &str) -> Result<()> {
         let conn = self.get_conn().await?;
-        
+
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
             params![key, value],
         )?;
-        
+
         Ok(())
     }
-    
+
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let conn = self.get_conn().await?;
-        
+
         let value = conn.query_row(
             "SELECT value FROM settings WHERE key = ?",
             params![key],
             |row| row.get(0),
         );
-        
+
         match value {
             Ok(value) => Ok(Some(value)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

@@ -1,6 +1,12 @@
-#![allow(unused_imports, unused_variables, unused_assignments, dead_code, unused_features)]
-use serde::{Deserialize, Serialize};
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_assignments,
+    dead_code,
+    unused_features
+)]
 use bitcoin::{opcodes::all, Amount};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 pub struct WalletInfo {

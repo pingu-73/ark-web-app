@@ -1,11 +1,11 @@
-use anyhow::{Result, anyhow};
-use ark_core::Vtxo;
+use anyhow::{anyhow, Result};
 use ark_core::server::VtxoOutPoint;
+use ark_core::Vtxo;
 use bitcoin::Amount;
-use std::sync::Arc;
-use std::collections::HashMap;
-use parking_lot::RwLock;
 use chrono::Utc;
+use parking_lot::RwLock;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct VtxoState {
@@ -18,10 +18,10 @@ pub struct VtxoState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VtxoStatus {
-    Pending,      // Preconfirmed
-    Confirmed,    // Bitcoin-finalized
-    Spent,        // Used in transaction
-    Expired,      // Past expiry time
+    Pending,   // Preconfirmed
+    Confirmed, // Bitcoin-finalized
+    Spent,     // Used in transaction
+    Expired,   // Past expiry time
 }
 
 pub struct VtxoManager {
@@ -55,8 +55,14 @@ impl VtxoManager {
                         }
 
                         let total_amount: Amount = outpoints.iter().map(|o| o.amount).sum();
-                        let earliest_expiry = outpoints.iter().map(|o| o.expire_at).min().unwrap_or(0).try_into().unwrap();
-                        
+                        let earliest_expiry = outpoints
+                            .iter()
+                            .map(|o| o.expire_at)
+                            .min()
+                            .unwrap_or(0)
+                            .try_into()
+                            .unwrap();
+
                         let status = if earliest_expiry <= now {
                             VtxoStatus::Expired
                         } else if outpoints.iter().any(|o| o.is_pending) {
@@ -87,7 +93,7 @@ impl VtxoManager {
 
                     tracing::info!("Found {} spendable VTXOs", vtxo_states.len());
                     Ok(vtxo_states)
-                },
+                }
                 Err(e) => {
                     tracing::error!("Failed to get spendable VTXOs: {}", e);
                     Err(anyhow!("Failed to get spendable VTXOs: {}", e))
@@ -127,10 +133,10 @@ impl VtxoManager {
             match self.grpc_client.participate_in_round().await {
                 Ok(Some(round_txid)) => {
                     tracing::info!("Successfully participated in round: {}", round_txid);
-                },
+                }
                 Ok(None) => {
                     tracing::info!("No round participation needed at this time");
-                },
+                }
                 Err(e) => {
                     tracing::error!("Failed to participate in round: {}", e);
                     return Err(anyhow!("Failed to renew VTXOs: {}", e));
@@ -157,7 +163,7 @@ impl VtxoManager {
                 VtxoStatus::Confirmed => confirmed += vtxo.total_amount,
                 VtxoStatus::Pending => pending += vtxo.total_amount,
                 VtxoStatus::Expired => expired += vtxo.total_amount,
-                VtxoStatus::Spent => {}, // Don't count spent VTXOs
+                VtxoStatus::Spent => {} // Don't count spent VTXOs
             }
         }
 

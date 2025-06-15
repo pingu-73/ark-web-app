@@ -1,8 +1,8 @@
-use anyhow::{Result, anyhow};
-use bitcoin::{ScriptBuf, XOnlyPublicKey, opcodes, script::Builder, Sequence, PublicKey};
-use bitcoin::taproot::TaprootBuilder;
-use bitcoin::secp256k1::Secp256k1;
+use anyhow::{anyhow, Result};
 use ark_core::UNSPENDABLE_KEY;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::taproot::TaprootBuilder;
+use bitcoin::{opcodes, script::Builder, PublicKey, ScriptBuf, Sequence, XOnlyPublicKey};
 
 pub struct ScriptManager;
 
@@ -20,7 +20,7 @@ impl ScriptManager {
     ) -> ScriptBuf {
         ScriptBuf::builder()
             .push_int(locktime.to_consensus_u32() as i64)
-            .push_opcode(opcodes::all::OP_CSV) 
+            .push_opcode(opcodes::all::OP_CSV)
             .push_opcode(opcodes::all::OP_DROP)
             .push_x_only_key(&user_pk)
             .push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
@@ -30,11 +30,7 @@ impl ScriptManager {
     }
 
     // multisig script (collaborative path)
-    pub fn multisig_script(
-        &self,
-        user_pk: XOnlyPublicKey,
-        server_pk: XOnlyPublicKey,
-    ) -> ScriptBuf {
+    pub fn multisig_script(&self, user_pk: XOnlyPublicKey, server_pk: XOnlyPublicKey) -> ScriptBuf {
         ScriptBuf::builder()
             .push_x_only_key(&user_pk)
             .push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
@@ -81,19 +77,19 @@ impl ScriptManager {
 
     // simple exit script (user-only with CSV delay)
     // refer arkade-os/tapscripts vtxo example: and_v(v:pk(user), older(delay))
-    pub fn create_exit_script(
-        &self,
-        user_pk: XOnlyPublicKey,
-        delay: u32,
-    ) -> Result<ScriptBuf> {
+    pub fn create_exit_script(&self, user_pk: XOnlyPublicKey, delay: u32) -> Result<ScriptBuf> {
         let script = ScriptBuf::builder()
             .push_x_only_key(&user_pk)
             .push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
             .push_int(delay as i64)
-            .push_opcode(opcodes::all::OP_CSV)  // Using OP_CSV
+            .push_opcode(opcodes::all::OP_CSV) // Using OP_CSV
             .into_script();
 
-        tracing::debug!("Created exit script for user: {} with delay: {}", user_pk, delay);
+        tracing::debug!(
+            "Created exit script for user: {} with delay: {}",
+            user_pk,
+            delay
+        );
         Ok(script)
     }
 
@@ -105,7 +101,11 @@ impl ScriptManager {
         server_pk: XOnlyPublicKey,
     ) -> Result<ScriptBuf> {
         let script = self.multisig_script(user_pk, server_pk);
-        tracing::debug!("Created checksigverify script for user: {}, server: {}", user_pk, server_pk);
+        tracing::debug!(
+            "Created checksigverify script for user: {}, server: {}",
+            user_pk,
+            server_pk
+        );
         Ok(script)
     }
 
@@ -117,7 +117,11 @@ impl ScriptManager {
         server_pk: XOnlyPublicKey,
     ) -> Result<ScriptBuf> {
         let script = self.multi_a_script(2, user_pk, server_pk);
-        tracing::debug!("Created checksigadd script for user: {}, server: {}", user_pk, server_pk);
+        tracing::debug!(
+            "Created checksigadd script for user: {}, server: {}",
+            user_pk,
+            server_pk
+        );
         Ok(script)
     }
 
@@ -130,15 +134,16 @@ impl ScriptManager {
     ) -> Result<ScriptBuf> {
         // Forfeit script: User checksigverify Server checksig
         let forfeit_script = self.multisig_script(user_pk, server_pk);
-        
+
         // Redeem script: timelock CSV drop User checksigverify Server checksig
         let redeem_script = self.csv_sig_script(timelock, user_pk, server_pk);
 
         // Use unspendable key for taproot
-        let unspendable_key: PublicKey = UNSPENDABLE_KEY.parse()
+        let unspendable_key: PublicKey = UNSPENDABLE_KEY
+            .parse()
             .map_err(|e| anyhow!("Invalid unspendable key: {}", e))?;
         let (unspendable_key, _) = unspendable_key.inner.x_only_public_key();
-        
+
         let secp = Secp256k1::new();
         let script_tree = TaprootBuilder::new()
             .add_leaf(1, forfeit_script)
@@ -147,9 +152,9 @@ impl ScriptManager {
             .map_err(|e| anyhow!("Failed to add redeem leaf: {}", e))?
             .finalize(&secp, unspendable_key)
             .map_err(|e| anyhow!("Failed to finalize script tree: {:?}", e))?;
-        
+
         let output_key = script_tree.output_key();
-        
+
         let script = Builder::new()
             .push_opcode(opcodes::all::OP_PUSHNUM_1)
             .push_slice(output_key.serialize())
@@ -195,7 +200,7 @@ impl ScriptManager {
     ) -> Result<(ScriptBuf, ScriptBuf)> {
         // Unroll path: n-of-n multisig of all participants
         let mut unroll_script = ScriptBuf::builder();
-        
+
         // add all participant keys with CHECKSIGVERIFY (except last)
         for (i, pk) in participants.iter().enumerate() {
             unroll_script = unroll_script.push_x_only_key(pk);
@@ -205,7 +210,7 @@ impl ScriptManager {
                 unroll_script = unroll_script.push_opcode(opcodes::all::OP_CHECKSIG);
             }
         }
-        
+
         let unroll_script = unroll_script.into_script();
 
         // Sweep path: server after timeout

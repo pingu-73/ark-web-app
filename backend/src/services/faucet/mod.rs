@@ -1,9 +1,9 @@
-use anyhow::{Result, anyhow};
-use bitcoin::{Amount, Address};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use anyhow::{anyhow, Result};
+use bitcoin::{Address, Amount};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 pub struct FaucetService {
     esplora_url: String,
@@ -26,7 +26,7 @@ impl FaucetService {
 
     pub async fn send_to_address(&self, address: &str) -> Result<String> {
         self.check_rate_limit(address).await?;
-        
+
         // For regtest, use bitcoin-cli or nigiri
         if self.network == bitcoin::Network::Regtest {
             self.send_regtest_funds(address).await
@@ -46,7 +46,7 @@ impl FaucetService {
             Ok(output) if output.status.success() => {
                 let txid = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 (txid, true)
-            },
+            }
             _ => {
                 // fallback to bitcoin-cli
                 let output = tokio::process::Command::new("bitcoin-cli")
@@ -55,8 +55,10 @@ impl FaucetService {
                     .await?;
 
                 if !output.status.success() {
-                    return Err(anyhow!("Failed to send funds: {}", 
-                        String::from_utf8_lossy(&output.stderr)));
+                    return Err(anyhow!(
+                        "Failed to send funds: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ));
                 }
 
                 let txid = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -79,16 +81,24 @@ impl FaucetService {
     async fn mine_blocks(&self, count: u32) -> Result<()> {
         // try nigiri first
         let output = tokio::process::Command::new("nigiri")
-            .args(&["rpc", "generatetoaddress", &count.to_string(), 
-                   "$(nigiri rpc getnewaddress)"])
+            .args(&[
+                "rpc",
+                "generatetoaddress",
+                &count.to_string(),
+                "$(nigiri rpc getnewaddress)",
+            ])
             .output()
             .await;
 
         if output.is_err() || !output.unwrap().status.success() {
             // [TODO!!!] fallback to bitcoin-cli
             tokio::process::Command::new("bitcoin-cli")
-                .args(&["-regtest", "generatetoaddress", &count.to_string(),
-                       "bcrt1qst65t8j4p7gf8zpqp6wfkn2l9mznqkd5jh46u"])
+                .args(&[
+                    "-regtest",
+                    "generatetoaddress",
+                    &count.to_string(),
+                    "bcrt1qst65t8j4p7gf8zpqp6wfkn2l9mznqkd5jh46u",
+                ])
                 .output()
                 .await?;
         }
@@ -98,17 +108,17 @@ impl FaucetService {
 
     async fn check_rate_limit(&self, address: &str) -> Result<()> {
         let limiter = self.rate_limiter.lock().await;
-        
+
         if let Some(last_request) = limiter.get(address) {
             if last_request.elapsed() < self.cooldown_period {
                 let remaining = self.cooldown_period - last_request.elapsed();
                 return Err(anyhow!(
-                    "Rate limited. Try again in {} seconds", 
+                    "Rate limited. Try again in {} seconds",
                     remaining.as_secs()
                 ));
             }
         }
-        
+
         Ok(())
     }
 

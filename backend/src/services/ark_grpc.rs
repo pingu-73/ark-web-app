@@ -1,19 +1,19 @@
 #![allow(unused_imports, unused_variables)]
 use anyhow::{anyhow, Context, Result};
-use std::sync::Arc;
 use parking_lot::{Mutex, RwLock};
 use rand::Rng;
+use std::sync::Arc;
 
-use ark_grpc::Client as ArkGrpcClient;
-use ark_client::error::ErrorContext;
-use ark_client::{Client, OfflineClient, Blockchain, ExplorerUtxo, SpendStatus};
 use ark_bdk_wallet::Wallet as BdkWallet;
+use ark_client::error::ErrorContext;
+use ark_client::{Blockchain, Client, ExplorerUtxo, OfflineClient, SpendStatus};
 use ark_core::{ArkAddress, ArkTransaction, BoardingOutput};
+use ark_grpc::Client as ArkGrpcClient;
 
+use bitcoin::hashes::Hash;
 use bitcoin::key::{Keypair, Secp256k1};
 use bitcoin::secp256k1::SecretKey;
 use bitcoin::{Address, Amount, Network, Transaction, Txid};
-use bitcoin::hashes::Hash;
 
 // Blockchain impl for Esplora
 pub struct EsploraBlockchain {
@@ -28,24 +28,24 @@ impl EsploraBlockchain {
 
     pub async fn test_esplora_connectivity(&self) -> Result<(), anyhow::Error> {
         tracing::info!("Testing Esplora connectivity...");
-        
+
         // get the blockchain tip hash
         match self.client.get_tip_hash().await {
             Ok(hash) => {
                 tracing::info!("Esplora server is accessible, tip hash: {}", hash);
-                
+
                 // get the current height as additional verification
                 match self.client.get_height().await {
                     Ok(height) => {
                         tracing::info!("Current blockchain height: {}", height);
                         Ok(())
-                    },
+                    }
                     Err(e) => {
                         tracing::error!("Failed to get blockchain height: {}", e);
                         Err(anyhow::anyhow!("Failed to get blockchain height: {}", e))
                     }
                 }
-            },
+            }
             Err(e) => {
                 tracing::error!("Esplora server is not accessible: {}", e);
                 Err(anyhow::anyhow!("Esplora server is not accessible: {}", e))
@@ -55,46 +55,58 @@ impl EsploraBlockchain {
 }
 
 impl Blockchain for EsploraBlockchain {
-    async fn find_outpoints(&self, address: &Address) -> Result<Vec<ExplorerUtxo>, ark_client::Error> {
+    async fn find_outpoints(
+        &self,
+        address: &Address,
+    ) -> Result<Vec<ExplorerUtxo>, ark_client::Error> {
         let script_pubkey = address.script_pubkey();
-        
+
         tracing::debug!("Finding outpoints for address: {}", address);
-        
+
         // [Debug!!]: get the tip hash to verify connectivity
         match self.client.get_tip_hash().await {
             Ok(hash) => {
                 tracing::debug!("Esplora server is accessible, tip hash: {}", hash);
-            },
+            }
             Err(e) => {
                 tracing::warn!("Esplora server connectivity check failed: {}", e);
                 // return an empty list instead of failing
                 return Ok(Vec::new());
             }
         }
-        
+
         // get address stats (lighter call)
         match self.client.get_address_stats(address).await {
             Ok(stats) => {
                 // log stats using the actual fields available in AddressStats
-                tracing::debug!("Address stats for {}: chain_stats: {:?}, mempool_stats: {:?}", address, stats.chain_stats, stats.mempool_stats);
-                
+                tracing::debug!(
+                    "Address stats for {}: chain_stats: {:?}, mempool_stats: {:?}",
+                    address,
+                    stats.chain_stats,
+                    stats.mempool_stats
+                );
+
                 // check if there are any tx
                 if stats.chain_stats.tx_count == 0 && stats.mempool_stats.tx_count == 0 {
                     tracing::debug!("No transactions for address {}", address);
                     return Ok(Vec::new());
                 }
-            },
+            }
             Err(e) => {
                 tracing::warn!("Failed to get address stats: {}", e);
                 // Continue anyway, as we'll try to get tx directly
             }
         }
-        
+
         // get tx
         match self.client.scripthash_txs(&script_pubkey, None).await {
             Ok(txs) => {
-                tracing::debug!("Successfully fetched {} transactions for address {}", txs.len(), address);
-                
+                tracing::debug!(
+                    "Successfully fetched {} transactions for address {}",
+                    txs.len(),
+                    address
+                );
+
                 let mut utxos = Vec::new();
                 for tx in txs {
                     for (vout, output) in tx.vout.iter().enumerate() {
@@ -103,17 +115,21 @@ impl Blockchain for EsploraBlockchain {
                                 txid: tx.txid,
                                 vout: vout as u32,
                             };
-                            
+
                             // check if output is spent
-                            let is_spent = match self.client.get_output_status(&tx.txid, vout as u64).await {
-                                Ok(Some(status)) => status.spent,
-                                Ok(None) => false,
-                                Err(e) => {
-                                    tracing::warn!("Error checking output status: {}, assuming unspent", e);
-                                    false
-                                }
-                            };
-                            
+                            let is_spent =
+                                match self.client.get_output_status(&tx.txid, vout as u64).await {
+                                    Ok(Some(status)) => status.spent,
+                                    Ok(None) => false,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Error checking output status: {}, assuming unspent",
+                                            e
+                                        );
+                                        false
+                                    }
+                                };
+
                             utxos.push(ExplorerUtxo {
                                 outpoint,
                                 amount: bitcoin::Amount::from_sat(output.value),
@@ -123,22 +139,22 @@ impl Blockchain for EsploraBlockchain {
                         }
                     }
                 }
-                
+
                 tracing::debug!("Found {} outpoints for address {}", utxos.len(), address);
                 Ok(utxos)
-            },
+            }
             Err(e) => {
                 if e.to_string().contains("expected value") {
                     tracing::warn!("Got 'expected value' error for address {}, this might be a new address with no transactions", address);
                     return Ok(Vec::new());
                 }
-                
+
                 // Handle 404 errors (no transactions for this address)
                 if e.to_string().contains("404") {
                     tracing::debug!("No transactions found for address {} (404)", address);
                     return Ok(Vec::new());
                 }
-                
+
                 // For other errors, log and return empty list
                 tracing::error!("Error fetching transactions for address {}: {}", address, e);
                 Ok(Vec::new())
@@ -148,7 +164,7 @@ impl Blockchain for EsploraBlockchain {
 
     async fn find_tx(&self, txid: &Txid) -> Result<Option<Transaction>, ark_client::Error> {
         tracing::debug!("Finding transaction: {}", txid);
-        
+
         match self.client.get_tx(txid).await {
             Ok(Some(tx)) => {
                 let tx_bytes = bitcoin::consensus::serialize(&tx);
@@ -156,11 +172,14 @@ impl Blockchain for EsploraBlockchain {
                     Ok(tx) => Ok(Some(tx)),
                     Err(e) => {
                         tracing::error!("Error deserializing transaction: {}", e);
-                        Err(ark_client::Error::wallet(anyhow!("Failed to deserialize transaction: {}", e)))
+                        Err(ark_client::Error::wallet(anyhow!(
+                            "Failed to deserialize transaction: {}",
+                            e
+                        )))
                     }
                 }
             }
-            Ok(None) => {Ok(None)}
+            Ok(None) => Ok(None),
             Err(esplora_client::Error::TransactionNotFound(_)) => {
                 tracing::debug!("Transaction not found: {}", txid);
                 Ok(None)
@@ -172,9 +191,13 @@ impl Blockchain for EsploraBlockchain {
         }
     }
 
-    async fn get_output_status(&self, txid: &Txid, vout: u32) -> Result<SpendStatus, ark_client::Error> {
+    async fn get_output_status(
+        &self,
+        txid: &Txid,
+        vout: u32,
+    ) -> Result<SpendStatus, ark_client::Error> {
         tracing::debug!("Getting output status for {}:{}", txid, vout);
-        
+
         let status = match self.client.get_output_status(txid, vout as u64).await {
             Ok(status) => status,
             Err(e) => {
@@ -182,7 +205,7 @@ impl Blockchain for EsploraBlockchain {
                 return Err(ark_client::Error::wallet(anyhow!("Esplora error: {}", e)));
             }
         };
-        
+
         Ok(SpendStatus {
             spend_txid: status.and_then(|s| s.txid),
         })
@@ -190,7 +213,7 @@ impl Blockchain for EsploraBlockchain {
 
     async fn broadcast(&self, tx: &Transaction) -> Result<(), ark_client::Error> {
         tracing::info!("Broadcasting transaction: {}", tx.compute_txid());
-        
+
         let _tx_bytes = bitcoin::consensus::serialize(tx);
         match self.client.broadcast(&tx).await {
             Ok(_) => {
@@ -199,7 +222,10 @@ impl Blockchain for EsploraBlockchain {
             }
             Err(e) => {
                 tracing::error!("Error broadcasting transaction: {}", e);
-                Err(ark_client::Error::wallet(anyhow!("Failed to broadcast transaction: {}", e)))
+                Err(ark_client::Error::wallet(anyhow!(
+                    "Failed to broadcast transaction: {}",
+                    e
+                )))
             }
         }
     }
@@ -235,23 +261,27 @@ impl ark_client::wallet::BoardingWallet for ArkWallet {
         network: Network,
     ) -> Result<BoardingOutput, ark_client::Error> {
         tracing::info!("Creating new boarding output");
-        
+
         let sk = self.keypair.secret_key();
         let (owner_pk, _) = self.keypair.x_only_public_key();
-        
-        let boarding_output = BoardingOutput::new(&self.secp, server_pk, owner_pk, exit_delay, network)
-            .map_err(|e| {
-                tracing::error!("Error creating boarding output: {}", e);
-                ark_client::Error::wallet(anyhow!("Failed to create boarding output: {}", e))
-            })?;
-        
+
+        let boarding_output = BoardingOutput::new(
+            &self.secp, server_pk, owner_pk, exit_delay, network,
+        )
+        .map_err(|e| {
+            tracing::error!("Error creating boarding output: {}", e);
+            ark_client::Error::wallet(anyhow!("Failed to create boarding output: {}", e))
+        })?;
+
         self.secret_keys.lock().insert(owner_pk.to_string(), sk);
         self.boarding_outputs.write().push(boarding_output.clone());
-       
-        tracing::info!("Created boarding output with address: {}", boarding_output.address());
+
+        tracing::info!(
+            "Created boarding output with address: {}",
+            boarding_output.address()
+        );
         Ok(boarding_output)
     }
-
 
     fn get_boarding_outputs(&self) -> Result<Vec<BoardingOutput>, ark_client::Error> {
         // doesn;t return Result, it just blocks
@@ -259,17 +289,23 @@ impl ark_client::wallet::BoardingWallet for ArkWallet {
         Ok(boarding_outputs.clone())
     }
 
-    fn sign_for_pk(&self, pk: &bitcoin::XOnlyPublicKey, msg: &bitcoin::secp256k1::Message) -> Result<bitcoin::secp256k1::schnorr::Signature, ark_client::Error> {
+    fn sign_for_pk(
+        &self,
+        pk: &bitcoin::XOnlyPublicKey,
+        msg: &bitcoin::secp256k1::Message,
+    ) -> Result<bitcoin::secp256k1::schnorr::Signature, ark_client::Error> {
         let secret_keys = self.secret_keys.lock();
-        
+
         if let Some(sk) = secret_keys.get(&pk.to_string()) {
             let keypair = Keypair::from_secret_key(&self.secp, sk);
             let sig = self.secp.sign_schnorr_no_aux_rand(msg, &keypair);
             Ok(sig)
-        } 
-        else {
+        } else {
             tracing::error!("No secret key found for public key: {}", pk);
-            Err(ark_client::Error::wallet(anyhow!("No secret key found for public key: {}", pk)))
+            Err(ark_client::Error::wallet(anyhow!(
+                "No secret key found for public key: {}",
+                pk
+            )))
         }
     }
 }
@@ -282,11 +318,10 @@ impl ark_client::wallet::OnchainWallet for ArkWallet {
         let wpkh = bitcoin::key::CompressedPublicKey::from_slice(&pubkey_bytes)
             .map_err(|e| ark_client::Error::wallet(anyhow!("Failed to create WPKH: {}", e)))?;
         let address = bitcoin::Address::p2wpkh(&wpkh, self.network);
-        
+
         tracing::info!("Generated regular onchain address: {}", address);
         Ok(address)
     }
-    
 
     async fn sync(&self) -> Result<(), ark_client::Error> {
         // [TODO!!] implement a full sync
@@ -325,12 +360,12 @@ impl ark_client::wallet::OnchainWallet for ArkWallet {
 
 pub struct ArkGrpcService {
     grpc_client: Option<ArkGrpcClient>,
-    ark_client: Arc<Mutex<Option<Arc<Client<EsploraBlockchain, ArkWallet>>>>>
+    ark_client: Arc<Mutex<Option<Arc<Client<EsploraBlockchain, ArkWallet>>>>>,
 }
 
 impl ArkGrpcService {
     pub fn new() -> Self {
-        Self { 
+        Self {
             grpc_client: None,
             ark_client: Arc::new(Mutex::new(None)),
         }
@@ -342,39 +377,52 @@ impl ArkGrpcService {
 
     pub async fn connect(&mut self, server_url: &str) -> Result<()> {
         tracing::info!("ArkGrpcService::connect: Connecting to {}", server_url);
-        
+
         // new gRPC client with the server URL
         let mut grpc_client = ArkGrpcClient::new(server_url.to_string());
-        
+
         // connect to server
         match grpc_client.connect().await {
             Ok(_) => {
-                tracing::info!("ArkGrpcService::connect: Successfully connected to {} via gRPC", server_url);
+                tracing::info!(
+                    "ArkGrpcService::connect: Successfully connected to {} via gRPC",
+                    server_url
+                );
                 self.grpc_client = Some(grpc_client);
-                
+
                 // Now initialize the Ark client
                 match self.init_ark_client_with_retry(server_url).await {
                     Ok(_) => {
                         tracing::info!("Successfully initialized Ark client");
-                    },
+                    }
                     Err(e) => {
                         tracing::error!("Failed to initialize Ark client: {}", e);
                         // continue even if Ark client initialization fails
                     }
                 }
-                
+
                 Ok(())
-            },
+            }
             Err(e) => {
-                tracing::error!("ArkGrpcService::connect: Failed to connect to {}: {}", server_url, e);
+                tracing::error!(
+                    "ArkGrpcService::connect: Failed to connect to {}: {}",
+                    server_url,
+                    e
+                );
                 Err(anyhow::anyhow!("Failed to connect to Ark server: {}", e))
             }
         }
     }
-    
-    pub async fn unilateral_exit(&self, vtxo_txid: String) -> Result<crate::models::wallet::TransactionResponse> {
-        tracing::warn!("Unilateral exit is not fully implemented yet for VTXO: {}", vtxo_txid);
-        
+
+    pub async fn unilateral_exit(
+        &self,
+        vtxo_txid: String,
+    ) -> Result<crate::models::wallet::TransactionResponse> {
+        tracing::warn!(
+            "Unilateral exit is not fully implemented yet for VTXO: {}",
+            vtxo_txid
+        );
+
         // Check if the VTXO exists and is eligible for exit
         let client = {
             let client_opt = self.get_ark_client();
@@ -386,8 +434,10 @@ impl ArkGrpcService {
             match client.spendable_vtxos().await {
                 Ok(vtxos) => {
                     let vtxo_found = vtxos.iter().any(|(outpoints, vtxo)| {
-                        vtxo.address().to_string() == vtxo_txid ||
-                        outpoints.iter().any(|o| o.outpoint.to_string() == vtxo_txid)
+                        vtxo.address().to_string() == vtxo_txid
+                            || outpoints
+                                .iter()
+                                .any(|o| o.outpoint.to_string() == vtxo_txid)
                     });
 
                     if !vtxo_found {
@@ -399,8 +449,12 @@ impl ArkGrpcService {
                     // 1. Build the unilateral exit transaction using the VTXO's exit script
                     // 2. Sign it with the user's key
                     // 3. Broadcast it to the Bitcoin network
-                    let exit_txid = format!("exit_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
-                    
+                    let exit_txid = format!(
+                        "exit_{}_{}",
+                        chrono::Utc::now().timestamp(),
+                        rand::random::<u32>()
+                    );
+
                     let tx = crate::models::wallet::TransactionResponse {
                         txid: exit_txid,
                         amount: -1000, // Placeholder amount (should be VTXO amount minus fees)
@@ -419,12 +473,13 @@ impl ArkGrpcService {
                         tracing::error!("Failed to recalculate balance after exit: {}", e);
                     }
 
-                    tracing::info!("Created placeholder unilateral exit transaction: {}", tx.txid);
+                    tracing::info!(
+                        "Created placeholder unilateral exit transaction: {}",
+                        tx.txid
+                    );
                     Ok(tx)
-                },
-                Err(e) => {
-                    Err(anyhow!("Failed to check VTXOs for exit: {}", e))
                 }
+                Err(e) => Err(anyhow!("Failed to check VTXOs for exit: {}", e)),
             }
         } else {
             Err(anyhow!("Ark client not available"))
@@ -437,23 +492,32 @@ impl ArkGrpcService {
         tracing::info!("ArkGrpcService::is_connected: {}", connected);
         connected
     }
-    
+
     async fn init_ark_client(&mut self, server_url: &str) -> Result<()> {
         // load env vars
-        let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".to_string()).as_str() {
+        let network = match std::env::var("BITCOIN_NETWORK")
+            .unwrap_or_else(|_| "regtest".to_string())
+            .as_str()
+        {
             "mainnet" => Network::Bitcoin,
             "testnet" => Network::Testnet,
             "signet" => Network::Signet,
             _ => Network::Regtest,
         };
-        
-        let esplora_url = std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
-        
-        tracing::info!("Using network: {}, esplora: {}, ark server: {}", network, esplora_url, server_url);
-        
+
+        let esplora_url =
+            std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+
+        tracing::info!(
+            "Using network: {}, esplora: {}, ark server: {}",
+            network,
+            esplora_url,
+            server_url
+        );
+
         // create or load keypair
         let keypair = self.load_or_create_keypair()?;
-        
+
         // initialize blockchain and wallet impls
         let blockchain = Arc::new(EsploraBlockchain::new(&esplora_url)?);
         match blockchain.test_esplora_connectivity().await {
@@ -461,7 +525,6 @@ impl ArkGrpcService {
             Err(e) => tracing::warn!("Esplora connectivity test failed: {}", e),
         }
         let wallet = Arc::new(ArkWallet::new(keypair.clone(), network));
-        
 
         let offline_client = OfflineClient::new(
             "ark-web-app".to_string(),
@@ -470,7 +533,7 @@ impl ArkGrpcService {
             wallet,
             server_url.to_string(),
         );
-        
+
         tracing::debug!(
             "Attempting to connect with: network={:?}, keypair_pubkey={}, server_url={}",
             network,
@@ -492,9 +555,13 @@ impl ArkGrpcService {
                 let mut ark_client = self.ark_client.lock();
                 *ark_client = Some(Arc::new(client));
                 Ok(())
-            },
+            }
             Err(e) => {
-                tracing::error!("Failed to connect to Ark server: {} (type: {})", e, std::any::type_name_of_val(&e));
+                tracing::error!(
+                    "Failed to connect to Ark server: {} (type: {})",
+                    e,
+                    std::any::type_name_of_val(&e)
+                );
                 Err(anyhow::anyhow!("Failed to connect to Ark server: {}", e))
             }
         }
@@ -503,28 +570,28 @@ impl ArkGrpcService {
     async fn init_ark_client_with_retry(&mut self, server_url: &str) -> Result<()> {
         let max_retries = 3;
         let mut retries = 0;
-        
+
         while retries < max_retries {
             tracing::info!("Attempt {} to initialize Ark client", retries + 1);
-            
+
             // create a new gRPC client for each attempt
             let mut grpc_client = ArkGrpcClient::new(server_url.to_string());
-            
+
             // try to connect the gRPC client first
             match grpc_client.connect().await {
                 Ok(_) => {
                     tracing::info!("gRPC connection successful");
-                    
+
                     // try to get server info directly
                     match grpc_client.get_info().await {
                         Ok(info) => {
                             tracing::info!("Successfully got server info: {:?}", info);
-                            
+
                             // try the full client initialization
                             let network = Network::Regtest;
                             let esplora_url = std::env::var("ESPLORA_URL")
                                 .unwrap_or_else(|_| "http://localhost:3000".to_string());
-                            
+
                             let keypair = self.load_or_create_keypair()?;
                             let blockchain = Arc::new(EsploraBlockchain::new(&esplora_url)?);
                             match blockchain.test_esplora_connectivity().await {
@@ -532,7 +599,7 @@ impl ArkGrpcService {
                                 Err(e) => tracing::warn!("Esplora connectivity test failed: {}", e),
                             }
                             let wallet = Arc::new(ArkWallet::new(keypair.clone(), network));
-                            
+
                             let offline_client = OfflineClient::new(
                                 "ark-web-app".to_string(),
                                 keypair,
@@ -540,32 +607,32 @@ impl ArkGrpcService {
                                 wallet,
                                 server_url.to_string(),
                             );
-                            
+
                             match offline_client.connect().await {
                                 Ok(client) => {
                                     tracing::info!("Successfully initialized Ark client");
                                     let mut ark_client = self.ark_client.lock();
                                     *ark_client = Some(Arc::new(client));
                                     return Ok(());
-                                },
+                                }
                                 Err(e) => {
                                     tracing::error!("Failed to initialize Ark client: {}", e);
                                     // Continue to retry
                                 }
                             }
-                        },
+                        }
                         Err(e) => {
                             tracing::error!("Failed to get server info: {}", e);
                             // Continue to retry
                         }
                     }
-                },
+                }
                 Err(e) => {
                     tracing::error!("Failed to connect gRPC client: {}", e);
                     // Continue to retry
                 }
             }
-            
+
             retries += 1;
             if retries < max_retries {
                 let delay = std::time::Duration::from_secs(2 * retries as u64);
@@ -573,56 +640,62 @@ impl ArkGrpcService {
                 tokio::time::sleep(delay).await;
             }
         }
-        
-        Err(anyhow::anyhow!("Failed to initialize Ark client after {} attempts", max_retries))
+
+        Err(anyhow::anyhow!(
+            "Failed to initialize Ark client after {} attempts",
+            max_retries
+        ))
     }
 
     async fn check_server_status(&self, server_url: &str) -> Result<()> {
         let mut grpc_client = ArkGrpcClient::new(server_url.to_string());
-        
+
         match grpc_client.connect().await {
             Ok(_) => {
                 tracing::info!("gRPC connection successful");
-                
+
                 match grpc_client.get_info().await {
                     Ok(info) => {
                         tracing::info!("Server info: {:?}", info);
                         Ok(())
-                    },
+                    }
                     Err(e) => {
                         tracing::error!("Failed to get server info: {}", e);
                         Err(anyhow::anyhow!("Failed to get server info: {}", e))
                     }
                 }
-            },
+            }
             Err(e) => {
                 tracing::error!("Failed to connect gRPC client: {}", e);
                 Err(anyhow::anyhow!("Failed to connect gRPC client: {}", e))
             }
         }
     }
-    
+
     fn load_or_create_keypair(&self) -> Result<Keypair> {
         // use the key manager from APP_STATE
-        let (keypair, _) = crate::services::APP_STATE.key_manager.load_or_create_wallet()?;
-        
+        let (keypair, _) = crate::services::APP_STATE
+            .key_manager
+            .load_or_create_wallet()?;
+
         tracing::info!("Loaded keypair with public key: {}", keypair.public_key());
         Ok(keypair)
     }
 
-    pub fn get_ark_client(&self) -> parking_lot::MutexGuard<'_, Option<Arc<Client<EsploraBlockchain, ArkWallet>>>> {
+    pub fn get_ark_client(
+        &self,
+    ) -> parking_lot::MutexGuard<'_, Option<Arc<Client<EsploraBlockchain, ArkWallet>>>> {
         self.ark_client.lock()
     }
 
     // update app state with client info
     pub async fn update_app_state(&self) -> Result<()> {
-
         // cloned arc to avoid lock handling
         let client = {
             let client_opt = self.get_ark_client();
             client_opt.as_ref().map(|c| Arc::clone(c))
         }; // Lock dropped here
-        
+
         if let Some(client) = client {
             // get offchain balance
             if let Ok(offchain_balance) = client.offchain_balance().await {
@@ -633,169 +706,171 @@ impl ArkGrpcService {
                 balance.immature = 0;
                 balance.total = offchain_balance.total().to_sat();
             }
-            
+
             // get tx history
             if let Ok(history) = client.transaction_history().await {
                 let mut transactions = crate::services::APP_STATE.transactions.lock().await;
                 transactions.clear();
-                
+
                 for tx in history {
                     let tx_response = match tx {
-                        ArkTransaction::Boarding { txid, amount, confirmed_at } => {
-                            crate::models::wallet::TransactionResponse {
-                                txid: txid.to_string(),
-                                amount: amount.to_sat() as i64,
-                                timestamp: confirmed_at.unwrap_or(chrono::Utc::now().timestamp()),
-                                type_name: "Boarding".to_string(),
-                                is_settled: Some(confirmed_at.is_some()),
-                            }
+                        ArkTransaction::Boarding {
+                            txid,
+                            amount,
+                            confirmed_at,
+                        } => crate::models::wallet::TransactionResponse {
+                            txid: txid.to_string(),
+                            amount: amount.to_sat() as i64,
+                            timestamp: confirmed_at.unwrap_or(chrono::Utc::now().timestamp()),
+                            type_name: "Boarding".to_string(),
+                            is_settled: Some(confirmed_at.is_some()),
                         },
-                        ArkTransaction::Round { txid, amount, created_at } => {
-                            crate::models::wallet::TransactionResponse {
-                                txid: txid.to_string(),
-                                amount: amount.to_sat() as i64,
-                                timestamp: created_at,
-                                type_name: "Round".to_string(),
-                                is_settled: Some(true),
-                            }
+                        ArkTransaction::Round {
+                            txid,
+                            amount,
+                            created_at,
+                        } => crate::models::wallet::TransactionResponse {
+                            txid: txid.to_string(),
+                            amount: amount.to_sat() as i64,
+                            timestamp: created_at,
+                            type_name: "Round".to_string(),
+                            is_settled: Some(true),
                         },
-                        ArkTransaction::Redeem { txid, amount, is_settled, created_at } => {
-                            crate::models::wallet::TransactionResponse {
-                                txid: txid.to_string(),
-                                amount: amount.to_sat() as i64,
-                                timestamp: created_at,
-                                type_name: "Redeem".to_string(),
-                                is_settled: Some(is_settled),
-                            }
+                        ArkTransaction::Redeem {
+                            txid,
+                            amount,
+                            is_settled,
+                            created_at,
+                        } => crate::models::wallet::TransactionResponse {
+                            txid: txid.to_string(),
+                            amount: amount.to_sat() as i64,
+                            timestamp: created_at,
+                            type_name: "Redeem".to_string(),
+                            is_settled: Some(is_settled),
                         },
                     };
-                    
+
                     transactions.push(tx_response);
                 }
             }
             Ok(())
-        }
-        else {
+        } else {
             tracing::warn!("Cannot update app state: Ark client not initialized");
             Err(anyhow::anyhow!("Ark client not initialized"))
         }
     }
-    
+
     pub async fn get_address(&self) -> Result<String> {
         let client = {
             let client_opt = self.get_ark_client();
             client_opt.as_ref().map(|c| Arc::clone(c))
         };
-        
+
         if let Some(client) = client {
             match client.get_offchain_address() {
                 Ok((address, _)) => {
                     tracing::info!("Got real offchain address: {}", address);
                     Ok(address.to_string())
-                },
+                }
                 Err(e) => {
                     tracing::warn!("Failed to get offchain address: {}", e);
                     Err(anyhow::anyhow!("Failed to get offchain address: {}", e))
                 }
             }
-        } 
-        else {
+        } else {
             Err(anyhow::anyhow!("Ark client not initialized"))
         }
     }
-    
+
     pub async fn get_boarding_address(&self) -> Result<String> {
         let client = {
             let client_opt = self.get_ark_client();
             client_opt.as_ref().map(|c| Arc::clone(c))
         };
-        
+
         if let Some(client) = client {
             match client.get_boarding_address() {
                 Ok(address) => Ok(address.to_string()),
-                Err(e) => Err(anyhow::anyhow!("Failed to get boarding address: {}", e))
+                Err(e) => Err(anyhow::anyhow!("Failed to get boarding address: {}", e)),
             }
-        } 
-        else {
+        } else {
             Err(anyhow::anyhow!("Ark client not initialized"))
         }
     }
-    
+
     pub async fn send_vtxo(&self, address_str: String, amount: u64) -> Result<String> {
         let client = {
             let client_opt = self.get_ark_client();
             client_opt.as_ref().map(|c| Arc::clone(c))
         };
-        
+
         if let Some(client) = client {
             tracing::info!("Parsing address: {}", address_str);
-            
+
             let address = ArkAddress::decode(&address_str)
                 .map_err(|e| anyhow::anyhow!("Failed to parse address: {}", e))?;
-            
+
             let amount = Amount::from_sat(amount);
-            
+
             tracing::info!("Sending {} sats to {}", amount.to_sat(), address_str);
-            
+
             match client.send_vtxo(address, amount).await {
                 Ok(psbt) => {
-                    let tx = psbt.extract_tx()
+                    let tx = psbt
+                        .extract_tx()
                         .map_err(|e| anyhow::anyhow!("Failed to extract transaction: {}", e))?;
                     let txid = tx.compute_txid();
                     tracing::info!("Successfully sent VTXO with txid: {}", txid);
-                    
+
                     // update app state after sending
                     if let Err(e) = self.update_app_state().await {
                         tracing::warn!("Failed to update app state after sending: {}", e);
                     }
-                    
+
                     Ok(txid.to_string())
-                },
+                }
                 Err(e) => {
                     tracing::error!("Failed to send VTXO: {}", e);
                     Err(anyhow::anyhow!("Failed to send vtxo: {}", e))
                 }
             }
-        } 
-        else {
+        } else {
             Err(anyhow::anyhow!("Ark client not available"))
         }
     }
-    
 
     pub async fn check_deposits(&self) -> Result<bool> {
         let client_opt = self.get_ark_client();
-        
+
         if let Some(client) = client_opt.as_ref() {
             // random no for boarding process
             let mut rng = bitcoin::secp256k1::rand::thread_rng();
-            
+
             // board any pending deposits
             tracing::info!("Checking for deposits to board");
             let result = client.board(&mut rng).await;
-            
+
             match result {
                 Ok(_) => {
                     tracing::info!("Successfully boarded deposits");
-                    
+
                     // Update app state after boarding
                     self.update_app_state().await?;
-                    
+
                     return Ok(true);
-                },
+                }
                 Err(e) => {
                     if e.to_string().contains("No boarding outputs") {
                         tracing::info!("No deposits to board");
                         return Ok(false);
-                    } 
-                    else {
+                    } else {
                         tracing::error!("Error boarding deposits: {}", e);
                         return Err(anyhow::anyhow!("Error boarding deposits: {}", e));
                     }
                 }
             }
         }
-        
+
         // fallback if client unavailable
         let mut transactions = crate::services::APP_STATE.transactions.lock().await;
         transactions.push(crate::models::wallet::TransactionResponse {
@@ -805,61 +880,63 @@ impl ArkGrpcService {
             type_name: "Boarding".to_string(),
             is_settled: Some(true),
         });
-        
+
         // recalculate balance
         drop(transactions);
         crate::services::APP_STATE.recalculate_balance().await?;
-        
+
         Ok(true)
     }
-    
+
     pub async fn participate_in_round(&self) -> Result<Option<String>> {
         let client_opt = self.get_ark_client();
-        
+
         if let Some(client) = client_opt.as_ref() {
             // random no. for round participation
             let mut rng = bitcoin::secp256k1::rand::thread_rng();
-            
+
             // participate in round
             tracing::info!("Participating in a round");
             let result = client.board(&mut rng).await;
-            
+
             match result {
                 Ok(_) => {
                     tracing::info!("Successfully participated in round");
-                    
+
                     // update app state after round participation
                     self.update_app_state().await?;
-                    
-                    // [TODO!! (get the round txid)] 
+
+                    // [TODO!! (get the round txid)]
                     // Dummy impl
                     let placeholder_txid = format!("round_{}", chrono::Utc::now().timestamp());
                     return Ok(Some(placeholder_txid));
-                },
+                }
                 Err(e) => {
-                    if e.to_string().contains("No boarding outputs") && e.to_string().contains("No VTXOs") {
+                    if e.to_string().contains("No boarding outputs")
+                        && e.to_string().contains("No VTXOs")
+                    {
                         tracing::info!("No outputs to include in round");
                         return Ok(None);
-                    } 
-                    else {
+                    } else {
                         tracing::error!("Error participating in round: {}", e);
                         return Err(anyhow::anyhow!("Error participating in round: {}", e));
                     }
                 }
             }
         }
-        
+
         // fallback if client unavailable (simulate round participation)
         let mut transactions = crate::services::APP_STATE.transactions.lock().await;
-        
-        let pending_txs: Vec<_> = transactions.iter()
+
+        let pending_txs: Vec<_> = transactions
+            .iter()
             .filter(|tx| tx.is_settled == Some(false))
             .collect();
-        
+
         if pending_txs.is_empty() {
             return Ok(None);
         }
-        
+
         // mark all pending tx as settled
         let mut settled_txids = Vec::new();
         for tx in transactions.iter_mut() {
@@ -868,9 +945,13 @@ impl ArkGrpcService {
                 settled_txids.push(tx.txid.clone());
             }
         }
-        
-        let round_txid = format!("round_{}_{}", chrono::Utc::now().timestamp(), rand::random::<u32>());
-        
+
+        let round_txid = format!(
+            "round_{}_{}",
+            chrono::Utc::now().timestamp(),
+            rand::random::<u32>()
+        );
+
         // add round tx to history
         transactions.push(crate::models::wallet::TransactionResponse {
             txid: round_txid.clone(),
@@ -879,65 +960,69 @@ impl ArkGrpcService {
             type_name: "Round".to_string(),
             is_settled: Some(true),
         });
-        
+
         drop(transactions);
-        
+
         // recalculate balance for consistency
         crate::services::APP_STATE.recalculate_balance().await?;
-        
+
         // log settled tx
         tracing::info!(
             "Round {} settled {} transactions: {:?}",
-            round_txid, settled_txids.len(), settled_txids
+            round_txid,
+            settled_txids.len(),
+            settled_txids
         );
-        
+
         Ok(Some(round_txid))
     }
-    
 
     pub async fn get_transaction_history(&self) -> Result<Vec<(String, i64, i64, String, bool)>> {
         tracing::info!("ArkGrpcService: Starting to fetch transaction history");
-        
+
         let timeout_duration = std::time::Duration::from_secs(5);
-        
+
         // check if client exists without holding lock
         let has_client = {
             let client_opt = self.get_ark_client();
             client_opt.is_some()
         };
-        
+
         if has_client {
             // update app state with a timeout
             let update_future = self.update_app_state();
             match tokio::time::timeout(timeout_duration, update_future).await {
-                Ok(update_result) => {
-                    match update_result {
-                        Ok(_) => tracing::info!("ArkGrpcService: Successfully updated app state"),
-                        Err(e) => tracing::warn!("ArkGrpcService: Failed to update app state: {}", e),
-                    }
+                Ok(update_result) => match update_result {
+                    Ok(_) => tracing::info!("ArkGrpcService: Successfully updated app state"),
+                    Err(e) => tracing::warn!("ArkGrpcService: Failed to update app state: {}", e),
                 },
                 Err(_) => {
                     tracing::warn!("ArkGrpcService: Timeout while updating app state");
                 }
             }
-            
+
             // Get transactions from app state
             let transactions = crate::services::APP_STATE.transactions.lock().await;
-            tracing::info!("ArkGrpcService: Retrieved {} transactions from app state", transactions.len());
-            
-            let history = transactions.iter().map(|tx| {
-                (
-                    tx.txid.clone(),
-                    tx.amount,
-                    tx.timestamp,
-                    tx.type_name.clone(),
-                    tx.is_settled.unwrap_or(false),
-                )
-            }).collect::<Vec<_>>();
-            
+            tracing::info!(
+                "ArkGrpcService: Retrieved {} transactions from app state",
+                transactions.len()
+            );
+
+            let history = transactions
+                .iter()
+                .map(|tx| {
+                    (
+                        tx.txid.clone(),
+                        tx.amount,
+                        tx.timestamp,
+                        tx.type_name.clone(),
+                        tx.is_settled.unwrap_or(false),
+                    )
+                })
+                .collect::<Vec<_>>();
+
             Ok(history)
-        } 
-        else {
+        } else {
             Err(anyhow::anyhow!("Ark client not available"))
         }
     }

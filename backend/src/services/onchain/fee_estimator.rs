@@ -1,11 +1,11 @@
-use anyhow::{Result, anyhow};
+use crate::services::ark_grpc::EsploraBlockchain;
+use anyhow::{anyhow, Result};
 use bitcoin::FeeRate;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::services::ark_grpc::EsploraBlockchain;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
 struct MempoolSpaceFees {
@@ -23,11 +23,11 @@ struct MempoolSpaceFees {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeeEstimates {
-    pub fastest: u64,      // next block
-    pub fast: u64,         // 2-3 blocks
-    pub normal: u64,       // 6 blocks
-    pub slow: u64,         // 12-24 blocks
-    pub minimum: u64,      // min relay fee
+    pub fastest: u64, // next block
+    pub fast: u64,    // 2-3 blocks
+    pub normal: u64,  // 6 blocks
+    pub slow: u64,    // 12-24 blocks
+    pub minimum: u64, // min relay fee
     pub timestamp: i64,
 }
 
@@ -67,7 +67,10 @@ pub struct FeeEstimator {
 
 impl FeeEstimator {
     pub fn new(blockchain: Arc<EsploraBlockchain>) -> Self {
-        let network = match std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "regtest".to_string()).as_str() {
+        let network = match std::env::var("BITCOIN_NETWORK")
+            .unwrap_or_else(|_| "regtest".to_string())
+            .as_str()
+        {
             "mainnet" => bitcoin::Network::Bitcoin,
             "testnet" => bitcoin::Network::Testnet,
             "signet" => bitcoin::Network::Signet,
@@ -89,8 +92,7 @@ impl FeeEstimator {
     pub async fn estimate_fee_rate(&self) -> Result<FeeRate> {
         let estimates = self.get_fee_estimates().await?;
         // normal priority as default
-        FeeRate::from_sat_per_vb(estimates.normal)
-            .ok_or_else(|| anyhow!("Invalid fee rate"))
+        FeeRate::from_sat_per_vb(estimates.normal).ok_or_else(|| anyhow!("Invalid fee rate"))
     }
 
     pub async fn get_fee_estimates(&self) -> Result<FeeEstimates> {
@@ -103,21 +105,15 @@ impl FeeEstimator {
         let estimates = match self.network {
             bitcoin::Network::Bitcoin | bitcoin::Network::Testnet => {
                 self.try_multiple_sources().await?
-            },
-            bitcoin::Network::Regtest => {
-                self.get_regtest_estimates().await?
-            },
-            bitcoin::Network::Signet => {
-                self.try_signet_sources().await?
-            },
-            _ => {
-                self.get_default_estimates()
             }
+            bitcoin::Network::Regtest => self.get_regtest_estimates().await?,
+            bitcoin::Network::Signet => self.try_signet_sources().await?,
+            _ => self.get_default_estimates(),
         };
 
         // cache the estimates
         self.cache_estimates(estimates.clone());
-        
+
         Ok(estimates)
     }
 
@@ -165,10 +161,7 @@ impl FeeEstimator {
         let url = format!("{}/api/v1/fees/recommended", base_url);
         tracing::debug!("Fetching fees from mempool.space: {}", url);
 
-        let response = self.http_client
-            .get(&url)
-            .send()
-            .await?;
+        let response = self.http_client.get(&url).send().await?;
 
         if !response.status().is_success() {
             return Err(anyhow!("Mempool.space API error: {}", response.status()));
@@ -196,10 +189,7 @@ impl FeeEstimator {
         let url = format!("{}/api/fee-estimates", base_url);
         tracing::debug!("Fetching fees from blockstream: {}", url);
 
-        let response = self.http_client
-            .get(&url)
-            .send()
-            .await?;
+        let response = self.http_client.get(&url).send().await?;
 
         if !response.status().is_success() {
             return Err(anyhow!("Blockstream API error: {}", response.status()));
@@ -227,7 +217,11 @@ impl FeeEstimator {
         let is_regtest = match self.network {
             bitcoin::Network::Bitcoin => false,
             bitcoin::Network::Regtest => true,
-            _ => return Err(anyhow!("Unsupported network: only regtest and mainnet are supported"))
+            _ => {
+                return Err(anyhow!(
+                    "Unsupported network: only regtest and mainnet are supported"
+                ))
+            }
         };
 
         let command_base = if is_regtest { "nigiri" } else { "bitcoin-cli" };
@@ -241,17 +235,17 @@ impl FeeEstimator {
                 .into_iter()
                 .map(String::from)
                 .collect()
-        };        
-        
+        };
+
         tracing::info!("Bitcoin network: {:?}", self.network);
         tracing::info!("Using {} to estimate fees", command_base);
 
         let targets = vec![1, 3, 6, 144];
         let mut estimates = vec![];
-    
+
         for target in targets {
             tracing::info!("Fetching fee estimate for {} blocks", target);
-            
+
             let mut args = command_args_base.clone();
             if is_regtest {
                 args.push(target.to_string());
@@ -267,26 +261,34 @@ impl FeeEstimator {
             tracing::debug!("Command exit status: {}", output.status);
             tracing::debug!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
             tracing::debug!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
-    
+
             if output.status.success() {
                 let stdout_str = String::from_utf8_lossy(&output.stdout);
-                
+
                 let clean_json = Self::strip_ansi_codes(&stdout_str);
                 tracing::info!("Cleaned JSON for {} blocks: {}", target, clean_json);
-                
+
                 match serde_json::from_str::<serde_json::Value>(&clean_json) {
                     Ok(response) => {
                         tracing::debug!("Parsed JSON: {:?}", response);
-                        
+
                         if let Some(feerate) = response.get("feerate").and_then(|v| v.as_f64()) {
                             // convert BTC/kvB to sat/vB
                             let sat_per_vb = (feerate * 100_000.0) as u64;
                             estimates.push(sat_per_vb);
-                            tracing::info!("Fee estimate for {} blocks: {} BTC/kvB = {} sat/vB", target, feerate, sat_per_vb);
+                            tracing::info!(
+                                "Fee estimate for {} blocks: {} BTC/kvB = {} sat/vB",
+                                target,
+                                feerate,
+                                sat_per_vb
+                            );
                         } else {
-                            tracing::warn!("No 'feerate' field found in response for {} blocks", target);
+                            tracing::warn!(
+                                "No 'feerate' field found in response for {} blocks",
+                                target
+                            );
                         }
-                    },
+                    }
                     Err(e) => {
                         tracing::error!("Failed to parse JSON for {} blocks: {}", target, e);
                         tracing::debug!("Clean JSON was: {}", clean_json);
@@ -294,12 +296,17 @@ impl FeeEstimator {
                 }
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!("Command failed for {} blocks. Exit code: {}, stderr: {}", target, output.status, stderr);
+                tracing::warn!(
+                    "Command failed for {} blocks. Exit code: {}, stderr: {}",
+                    target,
+                    output.status,
+                    stderr
+                );
             }
         }
-    
+
         tracing::info!("Collected {} estimates: {:?}", estimates.len(), estimates);
-    
+
         if estimates.len() >= 4 {
             let fee_estimates = FeeEstimates {
                 fastest: estimates[0],
@@ -312,17 +319,20 @@ impl FeeEstimator {
             tracing::info!("Successfully created fee estimates: {:?}", fee_estimates);
             Ok(fee_estimates)
         } else {
-            Err(anyhow!("Failed to get enough fee estimates from bitcoin core: got {} estimates, need 4", estimates.len()))
+            Err(anyhow!(
+                "Failed to get enough fee estimates from bitcoin core: got {} estimates, need 4",
+                estimates.len()
+            ))
         }
     }
-    
+
     // helper function to strip ANSI color codes (alt: no color env var for nigiri)
     fn strip_ansi_codes(input: &str) -> String {
         // simple regex to remove ANSI escape seq
         // pattern: \x1b\[[0-9;]*m
         let mut result = String::new();
         let mut chars = input.chars();
-        
+
         while let Some(ch) = chars.next() {
             if ch == '\x1b' {
                 // skip escape seq
@@ -338,7 +348,7 @@ impl FeeEstimator {
                 result.push(ch);
             }
         }
-        
+
         result
     }
 
@@ -373,7 +383,6 @@ impl FeeEstimator {
             timestamp: chrono::Utc::now().timestamp(),
         }
     }
-
 
     fn get_default_estimates(&self) -> FeeEstimates {
         match self.network {
@@ -416,7 +425,7 @@ impl FeeEstimator {
 
     pub async fn estimate_fee_for_priority(&self, priority: FeePriority) -> Result<FeeRate> {
         let estimates = self.get_fee_estimates().await?;
-        
+
         let sat_per_vb = match priority {
             FeePriority::Fastest => estimates.fastest,
             FeePriority::Fast => estimates.fast,
@@ -430,8 +439,7 @@ impl FeeEstimator {
             sat_per_vb
         );
 
-        FeeRate::from_sat_per_vb(sat_per_vb)
-            .ok_or_else(|| anyhow!("Invalid fee rate"))
+        FeeRate::from_sat_per_vb(sat_per_vb).ok_or_else(|| anyhow!("Invalid fee rate"))
     }
 
     // legacy method for backward compatibility
@@ -442,24 +450,20 @@ impl FeeEstimator {
 
     fn adjust_fee_for_priority(&self, base_rate: FeeRate, priority: FeePriority) -> FeeRate {
         let base_sat_per_vb = base_rate.to_sat_per_vb_ceil();
-        
+
         let adjusted = match self.network {
-            bitcoin::Network::Regtest => {
-                match priority {
-                    FeePriority::Fastest => base_sat_per_vb * 10,
-                    FeePriority::Fast => base_sat_per_vb * 5,
-                    FeePriority::Normal => base_sat_per_vb * 2,
-                    FeePriority::Slow => base_sat_per_vb,
-                }
+            bitcoin::Network::Regtest => match priority {
+                FeePriority::Fastest => base_sat_per_vb * 10,
+                FeePriority::Fast => base_sat_per_vb * 5,
+                FeePriority::Normal => base_sat_per_vb * 2,
+                FeePriority::Slow => base_sat_per_vb,
             },
-            _ => {
-                match priority {
-                    FeePriority::Fastest => (base_sat_per_vb as f64 * 2.0) as u64,
-                    FeePriority::Fast => (base_sat_per_vb as f64 * 1.5) as u64,
-                    FeePriority::Normal => base_sat_per_vb,
-                    FeePriority::Slow => (base_sat_per_vb as f64 * 0.7).max(1.0) as u64,
-                }
-            }
+            _ => match priority {
+                FeePriority::Fastest => (base_sat_per_vb as f64 * 2.0) as u64,
+                FeePriority::Fast => (base_sat_per_vb as f64 * 1.5) as u64,
+                FeePriority::Normal => base_sat_per_vb,
+                FeePriority::Slow => (base_sat_per_vb as f64 * 0.7).max(1.0) as u64,
+            },
         };
 
         FeeRate::from_sat_per_vb(adjusted).expect("Valid fee rate")

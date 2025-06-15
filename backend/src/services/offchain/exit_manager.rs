@@ -1,7 +1,7 @@
-use anyhow::{Result, anyhow};
-use std::sync::Arc;
+use anyhow::{anyhow, Result};
 use bitcoin::Amount;
 use chrono::Utc;
+use std::sync::Arc;
 
 pub struct ExitManager {
     grpc_client: Arc<crate::services::ark_grpc::ArkGrpcService>,
@@ -19,21 +19,60 @@ impl ExitManager {
         // validate VTXO exists and is eligible for exit
         self.validate_exit_eligibility(&vtxo_id).await?;
 
-        match self.grpc_client.unilateral_exit(vtxo_id.clone()).await {
-            Ok(tx) => {
-                tracing::info!("Successfully initiated unilateral exit with txid: {}", tx.txid);
-                
-                // update app state after exit
-                if let Err(e) = self.grpc_client.update_app_state().await {
-                    tracing::warn!("Failed to update app state after exit: {}", e);
-                }
-                
-                Ok(tx.txid)
-            },
-            Err(e) => {
-                tracing::error!("Failed to perform unilateral exit: {}", e);
-                Err(anyhow!("Failed to perform unilateral exit: {}", e))
-            }
+        // match self.grpc_client.unilateral_exit(vtxo_id.clone()).await {
+        //     Ok(tx) => {
+        //         tracing::info!(
+        //             "Successfully initiated unilateral exit with txid: {}",
+        //             tx.txid
+        //         );
+
+        //         // update app state after exit
+        //         if let Err(e) = self.grpc_client.update_app_state().await {
+        //             tracing::warn!("Failed to update app state after exit: {}", e);
+        //         }
+
+        //         Ok(tx.txid)
+        //     }
+        //     Err(e) => {
+        //         tracing::error!("Failed to perform unilateral exit: {}", e);
+        //         Err(anyhow!("Failed to perform unilateral exit: {}", e))
+        //     }
+        // }
+        let client = {
+            let client_opt = self.grpc_client.get_ark_client();
+            client_opt.as_ref().map(|c| Arc::clone(c))
+        };
+
+        if let Some(client) = client {
+            client
+                .commit_vtxos_on_chain()
+                .await
+                .map_err(|e| anyhow!("Failed to commit VTXOs/ Failed Unilateral Exit: {}", e))?;
+            tracing::info!("Successfully initiated unilateral exit");
+            Ok("unilateral_exit_completed".to_string())
+        } else {
+            Err(anyhow!("Ark client not available"))
+        }
+    }
+
+    pub async fn collaborative_exit(
+        &self,
+        address: bitcoin::Address,
+        amount: bitcoin::Amount,
+    ) -> Result<String> {
+        let client = {
+            let client_opt = self.grpc_client.get_ark_client();
+            client_opt.as_ref().map(|c| Arc::clone(c))
+        };
+
+        if let Some(client) = client {
+            let txid = client
+                .send_on_chain(address, amount)
+                .await
+                .map_err(|e| anyhow!("Failed Collabrative Exit: {}", e))?;
+            Ok(txid.to_string())
+        } else {
+            Err(anyhow!("Ark client not available"))
         }
     }
 
@@ -75,8 +114,8 @@ impl ExitManager {
                 Ok(vtxos) => {
                     // find VTXO
                     let vtxo_found = vtxos.iter().any(|(outpoints, vtxo)| {
-                        vtxo.address().to_string() == vtxo_id ||
-                        outpoints.iter().any(|o| o.outpoint.to_string() == vtxo_id)
+                        vtxo.address().to_string() == vtxo_id
+                            || outpoints.iter().any(|o| o.outpoint.to_string() == vtxo_id)
                     });
 
                     if !vtxo_found {
@@ -85,18 +124,21 @@ impl ExitManager {
 
                     // check if VTXO is confirmed (can't exit pending VTXOs unilaterally)
                     let is_confirmed = vtxos.iter().any(|(outpoints, vtxo)| {
-                        (vtxo.address().to_string() == vtxo_id ||
-                         outpoints.iter().any(|o| o.outpoint.to_string() == vtxo_id)) &&
-                        outpoints.iter().all(|o| !o.is_pending)
+                        (vtxo.address().to_string() == vtxo_id
+                            || outpoints.iter().any(|o| o.outpoint.to_string() == vtxo_id))
+                            && outpoints.iter().all(|o| !o.is_pending)
                     });
 
                     if !is_confirmed {
-                        return Err(anyhow!("Cannot exit pending VTXO unilaterally: {}", vtxo_id));
+                        return Err(anyhow!(
+                            "Cannot exit pending VTXO unilaterally: {}",
+                            vtxo_id
+                        ));
                     }
 
                     Ok(())
-                },
-                Err(e) => Err(anyhow!("Failed to validate VTXO eligibility: {}", e))
+                }
+                Err(e) => Err(anyhow!("Failed to validate VTXO eligibility: {}", e)),
             }
         } else {
             Err(anyhow!("Ark client not available"))
@@ -107,16 +149,16 @@ impl ExitManager {
     async fn check_server_responsiveness(&self) -> Result<bool> {
         // Try server info with a timeout
         let timeout_duration = std::time::Duration::from_secs(10);
-        
+
         match tokio::time::timeout(timeout_duration, self.test_server_connection()).await {
             Ok(Ok(_)) => {
                 tracing::debug!("Server is responsive");
                 Ok(true)
-            },
+            }
             Ok(Err(e)) => {
                 tracing::warn!("Server connection failed: {}", e);
                 Ok(false)
-            },
+            }
             Err(_) => {
                 tracing::warn!("Server connection timed out");
                 Ok(false)
@@ -128,7 +170,7 @@ impl ExitManager {
         if self.grpc_client.is_connected() {
             match self.grpc_client.get_address().await {
                 Ok(_) => Ok(()),
-                Err(e) => Err(anyhow!("Server test failed: {}", e))
+                Err(e) => Err(anyhow!("Server test failed: {}", e)),
             }
         } else {
             Err(anyhow!("Not connected to server"))
@@ -140,7 +182,7 @@ impl ExitManager {
         let mut recommendations = Vec::new();
         let now = Utc::now().timestamp() as u64;
         let critical_threshold = 1800; // 30 minutes
-        let warning_threshold = 3600;  // 1 hour
+        let warning_threshold = 3600; // 1 hour
 
         let client = {
             let client_opt = self.grpc_client.get_ark_client();
@@ -152,26 +194,35 @@ impl ExitManager {
                 Ok(vtxos) => {
                     for (outpoints, _vtxo) in vtxos {
                         for outpoint in outpoints {
-                            let time_to_expiry = outpoint.expire_at.saturating_sub(now.try_into().unwrap());
-                            
+                            let time_to_expiry =
+                                outpoint.expire_at.saturating_sub(now.try_into().unwrap());
+
                             if time_to_expiry <= critical_threshold {
                                 recommendations.push(ExitRecommendation {
                                     vtxo_id: outpoint.outpoint.to_string(),
-                                    reason: ExitReason::NearExpiry(time_to_expiry.try_into().unwrap()),
+                                    reason: ExitReason::NearExpiry(
+                                        time_to_expiry.try_into().unwrap(),
+                                    ),
                                     urgency: ExitUrgency::Critical,
-                                    estimated_cost: self.estimate_exit_cost(outpoint.amount).await?,
+                                    estimated_cost: self
+                                        .estimate_exit_cost(outpoint.amount)
+                                        .await?,
                                 });
                             } else if time_to_expiry <= warning_threshold {
                                 recommendations.push(ExitRecommendation {
                                     vtxo_id: outpoint.outpoint.to_string(),
-                                    reason: ExitReason::NearExpiry(time_to_expiry.try_into().unwrap()),
+                                    reason: ExitReason::NearExpiry(
+                                        time_to_expiry.try_into().unwrap(),
+                                    ),
                                     urgency: ExitUrgency::Medium,
-                                    estimated_cost: self.estimate_exit_cost(outpoint.amount).await?,
+                                    estimated_cost: self
+                                        .estimate_exit_cost(outpoint.amount)
+                                        .await?,
                                 });
                             }
                         }
                     }
-                },
+                }
                 Err(e) => {
                     tracing::error!("Failed to check VTXO expiry: {}", e);
                 }
@@ -184,17 +235,17 @@ impl ExitManager {
     /// check for stuck tx that might need unilateral exit
     async fn check_stuck_transactions(&self) -> Result<Vec<ExitRecommendation>> {
         let mut recommendations = Vec::new();
-        
+
         // check app state for pending tx that have been stuck too long
         let transactions = crate::services::APP_STATE.transactions.lock().await;
         let now = Utc::now().timestamp();
         let stuck_threshold = 3600; // 1 hour
 
         for tx in transactions.iter() {
-            if tx.is_settled == Some(false) && 
-               (now - tx.timestamp) > stuck_threshold &&
-               tx.type_name == "Redeem" {
-                
+            if tx.is_settled == Some(false)
+                && (now - tx.timestamp) > stuck_threshold
+                && tx.type_name == "Redeem"
+            {
                 recommendations.push(ExitRecommendation {
                     vtxo_id: tx.txid.clone(),
                     reason: ExitReason::StuckTransaction,
@@ -213,16 +264,16 @@ impl ExitManager {
         // should depend on current fee rates and tx size
         let base_cost = Amount::from_sat(2000); // Base rx cost
         let percentage_cost = Amount::from_sat(vtxo_amount.to_sat() / 1000); // 0.1% of amount
-        
+
         Ok(base_cost + percentage_cost)
     }
 
     /// perform emergency exit for all VTXOs
     pub async fn emergency_exit_all(&self) -> Result<Vec<String>> {
         tracing::warn!("Performing emergency exit for all VTXOs");
-        
+
         let mut exit_txids = Vec::new();
-        
+
         let client = {
             let client_opt = self.grpc_client.get_ark_client();
             client_opt.as_ref().map(|c| Arc::clone(c))
@@ -237,16 +288,23 @@ impl ExitManager {
                                 match self.exit_vtxo(outpoint.outpoint.to_string()).await {
                                     Ok(txid) => {
                                         exit_txids.push(txid);
-                                        tracing::info!("Emergency exit successful for {}", outpoint.outpoint);
-                                    },
+                                        tracing::info!(
+                                            "Emergency exit successful for {}",
+                                            outpoint.outpoint
+                                        );
+                                    }
                                     Err(e) => {
-                                        tracing::error!("Emergency exit failed for {}: {}", outpoint.outpoint, e);
+                                        tracing::error!(
+                                            "Emergency exit failed for {}: {}",
+                                            outpoint.outpoint,
+                                            e
+                                        );
                                     }
                                 }
                             }
                         }
                     }
-                },
+                }
                 Err(e) => {
                     return Err(anyhow!("Failed to get VTXOs for emergency exit: {}", e));
                 }

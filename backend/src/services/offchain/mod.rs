@@ -1,21 +1,20 @@
-pub mod vtxo_manager;
+pub mod exit_manager;
 pub mod round_coordinator;
-pub mod transaction_builder;
 pub mod script_manager;
 pub mod subscription_manager;
-pub mod exit_manager;
+pub mod transaction_builder;
+pub mod vtxo_manager;
 
-pub use vtxo_manager::{VtxoManager, VtxoState, VtxoStatus};
+pub use exit_manager::{ExitManager, ExitReason, ExitRecommendation, ExitUrgency};
 pub use round_coordinator::{RoundCoordinator, RoundStatus};
-pub use transaction_builder::{ArkTransactionBuilder, TransactionPreparation};
 pub use script_manager::{ScriptManager, ScriptType};
 pub use subscription_manager::{
-    SubscriptionManager, ScriptUpdate, VtxoInfo, VtxoUpdate, 
-    VtxoUpdateType, BalanceUpdate
+    BalanceUpdate, ScriptUpdate, SubscriptionManager, VtxoInfo, VtxoUpdate, VtxoUpdateType,
 };
-pub use exit_manager::{ExitManager, ExitRecommendation, ExitReason, ExitUrgency};
+pub use transaction_builder::{ArkTransactionBuilder, TransactionPreparation};
+pub use vtxo_manager::{VtxoManager, VtxoState, VtxoStatus};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use ark_core::ArkAddress;
 use bitcoin::Amount;
 use std::sync::Arc;
@@ -54,68 +53,74 @@ impl ArkOffChainService {
         tracing::info!("Sending {} sats to {}", amount.to_sat(), address);
 
         // validate tx parameters
-        self.transaction_builder.validate_transaction_params(&address, amount)?;
+        self.transaction_builder
+            .validate_transaction_params(&address, amount)?;
 
         // check if sufficient balance
         let spendable_vtxos = self.vtxo_manager.get_spendable_vtxos().await?;
-        let total_balance: Amount = spendable_vtxos.iter()
+        let total_balance: Amount = spendable_vtxos
+            .iter()
             .filter(|v| v.status == VtxoStatus::Confirmed)
             .map(|v| v.total_amount)
             .sum();
 
         if total_balance < amount {
             return Err(anyhow!(
-                "Insufficient confirmed balance: have {} sats, need {} sats", 
-                total_balance.to_sat(), 
+                "Insufficient confirmed balance: have {} sats, need {} sats",
+                total_balance.to_sat(),
                 amount.to_sat()
             ));
         }
 
         // build and send the tx
-        let txid = self.transaction_builder.build_vtxo_transfer(address, amount).await?;
-        
+        let txid = self
+            .transaction_builder
+            .build_vtxo_transfer(address, amount)
+            .await?;
+
         tracing::info!("Successfully sent VTXO transfer with txid: {}", txid);
         Ok(txid)
     }
 
     pub async fn participate_in_round(&self) -> Result<Option<String>> {
         tracing::info!("Participating in round for batch swap");
-        
+
         // is participation needed?
         let round_status = self.round_coordinator.get_round_status().await?;
         tracing::debug!("Current round status: {:?}", round_status);
-        
+
         // participate in round
         let result = self.round_coordinator.participate().await?;
-        
+
         if let Some(ref txid) = result {
             tracing::info!("Successfully participated in round: {}", txid);
-            
+
             // update VTXO cache after successful round participation
             if let Err(e) = self.vtxo_manager.get_spendable_vtxos().await {
                 tracing::warn!("Failed to refresh VTXO cache after round: {}", e);
             }
         }
-        
+
         Ok(result)
     }
 
     pub async fn unilateral_exit(&self, vtxo_id: String) -> Result<String> {
         tracing::info!("Performing unilateral exit for VTXO: {}", vtxo_id);
-        
+
         // check exit conditions and get recommendations
         let recommendations = self.exit_manager.get_exit_recommendations().await?;
-        let critical_exits = recommendations.iter()
+        let critical_exits = recommendations
+            .iter()
             .filter(|r| r.urgency == ExitUrgency::Critical)
             .count();
-            
+
         if critical_exits > 0 {
             tracing::warn!("Found {} critical exit conditions", critical_exits);
         }
-        
+
         // perform the exit
         let txid = self.exit_manager.exit_vtxo(vtxo_id).await?;
-        
+
         tracing::info!("Successfully initiated unilateral exit with txid: {}", txid);
         Ok(txid)
     }
@@ -123,20 +128,25 @@ impl ArkOffChainService {
     // Returns (confirmed_balance, pending_balance) in satoshis
     pub async fn get_balance(&self) -> Result<(Amount, Amount)> {
         let vtxos = self.vtxo_manager.get_spendable_vtxos().await?;
-        
-        let confirmed: Amount = vtxos.iter()
+
+        let confirmed: Amount = vtxos
+            .iter()
             .filter(|v| v.status == VtxoStatus::Confirmed)
             .map(|v| v.total_amount)
             .sum();
-            
-        let pending: Amount = vtxos.iter()
+
+        let pending: Amount = vtxos
+            .iter()
             .filter(|v| v.status == VtxoStatus::Pending)
             .map(|v| v.total_amount)
             .sum();
 
-        tracing::debug!("Current balance - Confirmed: {} sats, Pending: {} sats", 
-                       confirmed.to_sat(), pending.to_sat());
-        
+        tracing::debug!(
+            "Current balance - Confirmed: {} sats, Pending: {} sats",
+            confirmed.to_sat(),
+            pending.to_sat()
+        );
+
         Ok((confirmed, pending))
     }
 
@@ -144,35 +154,43 @@ impl ArkOffChainService {
     pub async fn get_detailed_balance(&self) -> Result<(Amount, Amount, Amount)> {
         // Refresh VTXO cache first
         let _vtxos = self.vtxo_manager.get_spendable_vtxos().await?;
-        
+
         // get breakdown from cache
         let breakdown = self.vtxo_manager.get_balance_breakdown();
-        
-        tracing::debug!("Detailed balance - Confirmed: {} sats, Pending: {} sats, Expired: {} sats", 
-                       breakdown.0.to_sat(), breakdown.1.to_sat(), breakdown.2.to_sat());
-        
+
+        tracing::debug!(
+            "Detailed balance - Confirmed: {} sats, Pending: {} sats, Expired: {} sats",
+            breakdown.0.to_sat(),
+            breakdown.1.to_sat(),
+            breakdown.2.to_sat()
+        );
+
         Ok(breakdown)
     }
 
     pub async fn handle_expiry_management(&self) -> Result<()> {
         tracing::debug!("Checking VTXO expiry and renewal needs");
-        
+
         // check for expiry and automatically renew if needed
         self.vtxo_manager.check_expiry_and_renew().await?;
-        
+
         // check for any critical exit conditions
         let recommendations = self.exit_manager.get_exit_recommendations().await?;
-        let critical_recommendations: Vec<_> = recommendations.iter()
+        let critical_recommendations: Vec<_> = recommendations
+            .iter()
             .filter(|r| r.urgency == ExitUrgency::Critical)
             .collect();
-            
+
         if !critical_recommendations.is_empty() {
-            tracing::warn!("Found {} critical exit recommendations", critical_recommendations.len());
+            tracing::warn!(
+                "Found {} critical exit recommendations",
+                critical_recommendations.len()
+            );
             for rec in critical_recommendations {
                 tracing::warn!("Critical: VTXO {} - {:?}", rec.vtxo_id, rec.reason);
             }
         }
-        
+
         Ok(())
     }
 
@@ -193,11 +211,13 @@ impl ArkOffChainService {
 
     // prepare tx for review before sending
     pub async fn prepare_send_transaction(
-        &self, 
-        to_address: ArkAddress, 
-        amount: Amount
+        &self,
+        to_address: ArkAddress,
+        amount: Amount,
     ) -> Result<TransactionPreparation> {
-        self.transaction_builder.prepare_transaction(to_address, amount).await
+        self.transaction_builder
+            .prepare_transaction(to_address, amount)
+            .await
     }
 
     // current round status info
@@ -239,11 +259,13 @@ impl ArkOffChainService {
         // VTXO info
         if let Ok(vtxos) = self.vtxo_manager.get_spendable_vtxos().await {
             health.vtxo_count = vtxos.len();
-            health.balance_confirmed = vtxos.iter()
+            health.balance_confirmed = vtxos
+                .iter()
                 .filter(|v| v.status == VtxoStatus::Confirmed)
                 .map(|v| v.total_amount)
                 .sum();
-            health.balance_pending = vtxos.iter()
+            health.balance_pending = vtxos
+                .iter()
                 .filter(|v| v.status == VtxoStatus::Pending)
                 .map(|v| v.total_amount)
                 .sum();
@@ -308,7 +330,10 @@ impl ServiceHealth {
         } else if !self.grpc_connected {
             "Disconnected".to_string()
         } else if self.exit_recommendations > 0 {
-            format!("Warning: {} exit recommendations", self.exit_recommendations)
+            format!(
+                "Warning: {} exit recommendations",
+                self.exit_recommendations
+            )
         } else {
             "Unknown".to_string()
         }

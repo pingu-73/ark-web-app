@@ -29,7 +29,7 @@ impl KeyManager {
         let mut rng = bip39::rand::thread_rng();
         let mnemonic = Mnemonic::generate_in_with(&mut rng, Language::English, 24)
             .map_err(|e| anyhow!("Failed to generate mnemonic: {}", e))?;
-        
+
         let phrase = mnemonic.to_string();
 
         // derive keypair from mnemonic
@@ -46,7 +46,6 @@ impl KeyManager {
         Ok((keypair, phrase))
     }
 
-    
     // returns: (keypair, mnemonic phrase)
     pub fn load_or_create_wallet(&self) -> Result<(Keypair, String)> {
         let mnemonic_path = Path::new(&self.storage_path).join("mnemonic.txt");
@@ -62,7 +61,6 @@ impl KeyManager {
             self.generate_new_wallet()
         }
     }
-
 
     // returns: Bitcoin keypair
     fn keypair_from_mnemonic(&self, phrase: &str) -> Result<Keypair> {
@@ -93,7 +91,6 @@ impl KeyManager {
         Ok(keypair)
     }
 
-    
     // returns: Bitcoin keypair
     pub fn import_wallet(&self, phrase: &str) -> Result<Keypair> {
         // validate and derive keypair from mnemonic
@@ -110,7 +107,6 @@ impl KeyManager {
         Ok(keypair)
     }
 
-    
     // retuns: BIP39 mnemonic phrase
     pub fn get_mnemonic(&self) -> Result<String> {
         let mnemonic_path = Path::new(&self.storage_path).join("mnemonic.txt");
@@ -131,10 +127,7 @@ mod tests {
     #[test]
     fn test_generate_new_wallet() {
         let temp_dir = tempdir().unwrap();
-        let key_manager = KeyManager::new(
-            temp_dir.path().to_str().unwrap(),
-            Network::Regtest,
-        );
+        let key_manager = KeyManager::new(temp_dir.path().to_str().unwrap(), Network::Regtest);
 
         let (keypair, phrase) = key_manager.generate_new_wallet().unwrap();
 
@@ -157,10 +150,7 @@ mod tests {
     #[test]
     fn test_load_or_create_wallet() {
         let temp_dir = tempdir().unwrap();
-        let key_manager = KeyManager::new(
-            temp_dir.path().to_str().unwrap(),
-            Network::Regtest,
-        );
+        let key_manager = KeyManager::new(temp_dir.path().to_str().unwrap(), Network::Regtest);
 
         // First call should create a new wallet
         let (keypair1, _) = key_manager.load_or_create_wallet().unwrap();
@@ -178,10 +168,7 @@ mod tests {
     #[test]
     fn test_import_wallet() {
         let temp_dir = tempdir().unwrap();
-        let key_manager = KeyManager::new(
-            temp_dir.path().to_str().unwrap(),
-            Network::Regtest,
-        );
+        let key_manager = KeyManager::new(temp_dir.path().to_str().unwrap(), Network::Regtest);
 
         let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 

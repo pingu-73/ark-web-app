@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use ark_core::ArkAddress;
 use bitcoin::Amount;
 use std::sync::Arc;
@@ -17,7 +17,11 @@ impl ArkTransactionBuilder {
         to_address: ArkAddress,
         amount: Amount,
     ) -> Result<String> {
-        tracing::info!("Building VTXO transfer: {} sats to {}", amount.to_sat(), to_address);
+        tracing::info!(
+            "Building VTXO transfer: {} sats to {}",
+            amount.to_sat(),
+            to_address
+        );
 
         if to_address.to_string().is_empty() {
             return Err(anyhow!("Invalid Ark address"));
@@ -27,11 +31,15 @@ impl ArkTransactionBuilder {
             return Err(anyhow!("Amount must be greater than zero"));
         }
 
-        match self.grpc_client.send_vtxo(to_address.to_string(), amount.to_sat()).await {
+        match self
+            .grpc_client
+            .send_vtxo(to_address.to_string(), amount.to_sat())
+            .await
+        {
             Ok(txid) => {
                 tracing::info!("Successfully built VTXO transfer with txid: {}", txid);
                 Ok(txid)
-            },
+            }
             Err(e) => {
                 tracing::error!("Failed to build VTXO transfer: {}", e);
                 Err(anyhow!("Failed to build VTXO transfer: {}", e))
@@ -59,15 +67,11 @@ impl ArkTransactionBuilder {
         // [TODO!!!]
         let base_fee = Amount::from_sat(100); // Base fee in sats
         let amount_fee = Amount::from_sat(amount.to_sat() / 10000); // 0.01% of amount
-        
+
         Ok(base_fee + amount_fee)
     }
 
-    pub fn validate_transaction_params(
-        &self,
-        address: &ArkAddress,
-        amount: Amount,
-    ) -> Result<()> {
+    pub fn validate_transaction_params(&self, address: &ArkAddress, amount: Amount) -> Result<()> {
         if address.to_string().is_empty() {
             return Err(anyhow!("Invalid Ark address"));
         }

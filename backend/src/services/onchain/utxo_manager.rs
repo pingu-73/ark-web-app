@@ -1,9 +1,9 @@
-use anyhow::{Result, anyhow};
-use bitcoin::{Address, Amount, OutPoint};
-use ark_client::{Blockchain, ExplorerUtxo};
-use std::sync::Arc;
-use std::str::FromStr;
 use crate::services::ark_grpc::EsploraBlockchain;
+use anyhow::{anyhow, Result};
+use ark_client::{Blockchain, ExplorerUtxo};
+use bitcoin::{Address, Amount, OutPoint};
+use std::str::FromStr;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct SpendableUtxo {
@@ -35,13 +35,15 @@ impl UtxoManager {
 
     pub async fn get_spendable_utxos(&self) -> Result<Vec<SpendableUtxo>> {
         let address_str = crate::services::wallet::get_onchain_address().await?;
-        let address = bitcoin::Address::from_str(&address_str)?
-            .assume_checked();
+        let address = bitcoin::Address::from_str(&address_str)?.assume_checked();
 
         tracing::info!("Looking for UTXOs at regular Bitcoin address: {}", address);
 
         // find UTXOs for this address
-        let explorer_utxos = self.blockchain.find_outpoints(&address).await
+        let explorer_utxos = self
+            .blockchain
+            .find_outpoints(&address)
+            .await
             .map_err(|e| anyhow!("Failed to find outpoints: {}", e))?;
 
         // filter for unspent UTXOs and convert to SpendableUtxo
@@ -51,11 +53,15 @@ impl UtxoManager {
             .map(|utxo| SpendableUtxo::from((utxo, address.clone())))
             .collect();
 
-        tracing::info!("Found {} spendable UTXOs totaling {} sats", 
+        tracing::info!(
+            "Found {} spendable UTXOs totaling {} sats",
             spendable_utxos.len(),
-            spendable_utxos.iter().map(|u| u.amount.to_sat()).sum::<u64>()
+            spendable_utxos
+                .iter()
+                .map(|u| u.amount.to_sat())
+                .sum::<u64>()
         );
-        
+
         Ok(spendable_utxos)
     }
 
@@ -65,7 +71,11 @@ impl UtxoManager {
         Ok(total)
     }
 
-    pub fn select_utxos(&self, utxos: Vec<SpendableUtxo>, target_amount: Amount) -> Result<Vec<SpendableUtxo>> {
+    pub fn select_utxos(
+        &self,
+        utxos: Vec<SpendableUtxo>,
+        target_amount: Amount,
+    ) -> Result<Vec<SpendableUtxo>> {
         // largest first selection
         let mut sorted_utxos = utxos;
         sorted_utxos.sort_by(|a, b| b.amount.cmp(&a.amount));

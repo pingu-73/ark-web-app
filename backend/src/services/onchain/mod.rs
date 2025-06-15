@@ -1,14 +1,14 @@
-pub mod utxo_manager;
 pub mod fee_estimator;
 pub mod transaction_builder;
+pub mod utxo_manager;
 
-pub use utxo_manager::UtxoManager;
 pub use fee_estimator::FeeEstimator;
 pub use transaction_builder::TransactionBuilder;
+pub use utxo_manager::UtxoManager;
 
+use crate::services::ark_grpc::EsploraBlockchain;
 use anyhow::Result;
 use bitcoin::{Address, Amount, Txid};
-use crate::services::ark_grpc::EsploraBlockchain;
 
 pub struct OnChainPaymentService {
     pub utxo_manager: UtxoManager,
@@ -37,7 +37,7 @@ impl OnChainPaymentService {
     ) -> Result<Txid> {
         // 1. get available UTXOs
         let utxos = self.utxo_manager.get_spendable_utxos().await?;
-        
+
         // 2. estimate fee if not provided
         let fee_rate = match fee_rate {
             Some(rate) => rate,
@@ -45,7 +45,8 @@ impl OnChainPaymentService {
         };
 
         // 3. select UTXOs and build tx
-        let txid = self.transaction_builder
+        let txid = self
+            .transaction_builder
             .build_and_broadcast(utxos, to_address, amount, fee_rate)
             .await?;
 
@@ -59,7 +60,9 @@ impl OnChainPaymentService {
     pub async fn estimate_fee(&self, to_address: Address, amount: Amount) -> Result<Amount> {
         let utxos = self.utxo_manager.get_spendable_utxos().await?;
         let fee_rate = self.fee_estimator.estimate_fee_rate().await?;
-        
-        self.transaction_builder.estimate_fee(utxos, to_address, amount, fee_rate).await
+
+        self.transaction_builder
+            .estimate_fee(utxos, to_address, amount, fee_rate)
+            .await
     }
 }

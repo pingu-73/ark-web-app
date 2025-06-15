@@ -1,5 +1,5 @@
 [package]
-name = "ark-web-backend"
+name = "ARKive-Wallet-backend"
 version = "0.1.0"
 edition = "2021"
 description = "Backend for demonstrating Ark protocol"

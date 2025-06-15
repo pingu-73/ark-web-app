@@ -1,11 +1,17 @@
-#![allow(unused_imports, unused_variables, unused_assignments, dead_code, unused_features)]
+#![allow(
+    unused_imports,
+    unused_variables,
+    unused_assignments,
+    dead_code,
+    unused_features
+)]
+use crate::services::offchain::ArkOffChainService;
+use crate::services::transactions;
 use axum::{
     extract::{Json, Path},
-    response::IntoResponse,
     http::StatusCode,
+    response::IntoResponse,
 };
-use crate::services::transactions;
-use crate::services::offchain::ArkOffChainService;
 
 pub async fn get_history() -> impl IntoResponse {
     tracing::info!("API: Received request for transaction history");
@@ -14,12 +20,16 @@ pub async fn get_history() -> impl IntoResponse {
         Ok(history) => {
             tracing::info!("API: Successfully retrieved {} transactions", history.len());
             (StatusCode::OK, Json(history)).into_response()
-        },
+        }
         Err(e) => {
             tracing::error!("Error getting transaction history: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": e.to_string()
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -29,51 +39,71 @@ pub async fn get_transaction(Path(txid): Path<String>) -> impl IntoResponse {
         Ok(tx) => (StatusCode::OK, Json(tx)).into_response(),
         Err(e) => {
             tracing::error!("Error getting transaction: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": e.to_string()
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
         }
     }
 }
 
 pub async fn participate_in_round() -> impl IntoResponse {
     match crate::services::wallet::participate_in_round().await {
-        Ok(Some(txid)) => {
-            (StatusCode::OK, Json(serde_json::json!({
+        Ok(Some(txid)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
                 "success": true,
                 "round_txid": txid,
                 "message": "Successfully participated in round"
-            }))).into_response()
-        },
-        Ok(None) => {
-            (StatusCode::OK, Json(serde_json::json!({
+            })),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
                 "success": true,
                 "message": "No round participation needed at this time"
-            }))).into_response()
-        },
+            })),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!("Error participating in round: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": e.to_string()
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
         }
     }
 }
 
-pub async fn unilateral_exit(Json(request): Json<crate::models::wallet::ExitRequest>) -> impl IntoResponse {
+pub async fn unilateral_exit(
+    Json(request): Json<crate::models::wallet::ExitRequest>,
+) -> impl IntoResponse {
     match crate::services::wallet::unilateral_exit(request.vtxo_txid).await {
-        Ok(txid) => {
-            (StatusCode::OK, Json(serde_json::json!({
+        Ok(txid) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
                 "success": true,
                 "exit_txid": txid,
                 "message": "Successfully initiated unilateral exit"
-            }))).into_response()
-        },
+            })),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!("Error performing unilateral exit: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": e.to_string()
-            }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
         }
     }
 }

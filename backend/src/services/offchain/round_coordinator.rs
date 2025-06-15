@@ -1,11 +1,11 @@
-use anyhow::{Result, anyhow};
+use crate::services::ark_grpc::ArkWallet;
+use crate::services::ark_grpc::EsploraBlockchain;
+use crate::services::Client;
+use anyhow::{anyhow, Result};
+use bip39::rand::{rngs::StdRng, SeedableRng};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
-use crate::services::ark_grpc::EsploraBlockchain;
-use crate::services::ark_grpc::ArkWallet;
-use crate::services::Client;
-use bip39::rand::{SeedableRng, rngs::StdRng};
 
 pub struct RoundCoordinator {
     grpc_client: Arc<crate::services::ark_grpc::ArkGrpcService>,
@@ -19,7 +19,7 @@ impl RoundCoordinator {
     /// Participate in round
     pub async fn participate(&self) -> Result<Option<String>> {
         tracing::info!("Checking round participation requirements");
-        
+
         let client = {
             let client_opt = self.grpc_client.get_ark_client();
             client_opt.as_ref().map(|c| Arc::clone(c))
@@ -40,7 +40,7 @@ impl RoundCoordinator {
                     tracing::info!("Successfully participated in round");
                     // [TODO!!] actual round txid would need to be extracted from events
                     Ok(Some("round_completed".to_string()))
-                },
+                }
                 Err(e) => {
                     if e.to_string().contains("No boarding outputs") {
                         tracing::debug!("No participation needed");
@@ -56,12 +56,15 @@ impl RoundCoordinator {
     }
 
     // inputs that need round participation
-    async fn check_for_inputs(&self, client: &Client<EsploraBlockchain, ArkWallet>) -> Result<bool> {
+    async fn check_for_inputs(
+        &self,
+        client: &Client<EsploraBlockchain, ArkWallet>,
+    ) -> Result<bool> {
         // VTXOs near expiry
         if let Ok(vtxos) = client.spendable_vtxos().await {
             let now = chrono::Utc::now().timestamp() as u64;
             let renewal_threshold = 7200; // 2 hours
-            
+
             for (outpoints, _) in &vtxos {
                 for outpoint in outpoints {
                     let time_to_expiry = outpoint.expire_at.saturating_sub(now as i64);
@@ -91,7 +94,7 @@ impl RoundCoordinator {
                     tracing::info!("Found boarding outputs ready for round");
                 }
                 Ok(has_deposits)
-            },
+            }
             Err(e) => {
                 tracing::warn!("Failed to check boarding outputs: {}", e);
                 Ok(false)
@@ -113,7 +116,8 @@ impl RoundCoordinator {
 
                     for (outpoints, _) in &vtxos {
                         for outpoint in outpoints {
-                            let time_to_expiry = outpoint.expire_at.saturating_sub(now.try_into().unwrap());
+                            let time_to_expiry =
+                                outpoint.expire_at.saturating_sub(now.try_into().unwrap());
                             if time_to_expiry <= renewal_threshold {
                                 tracing::info!("Found VTXO needing renewal");
                                 return Ok(true);
@@ -121,7 +125,7 @@ impl RoundCoordinator {
                         }
                     }
                     Ok(false)
-                },
+                }
                 Err(e) => {
                     tracing::warn!("Failed to check VTXOs: {}", e);
                     Ok(false)
@@ -135,30 +139,29 @@ impl RoundCoordinator {
     /// monitor round events and handle signing
     pub async fn monitor_rounds(&self) -> Result<()> {
         tracing::info!("Starting round monitoring");
-        
+
         // [TODO!!] implement continuous monitoring of round events
         let mut interval = tokio::time::interval(Duration::from_secs(60));
-        
+
         loop {
             interval.tick().await;
-            
+
             if let Err(e) = self.check_and_participate().await {
                 tracing::error!("Error during round monitoring: {}", e);
             }
         }
     }
 
-
     async fn check_and_participate(&self) -> Result<()> {
         let needs_participation = self.check_available_inputs().await?;
-        
+
         if needs_participation {
             tracing::info!("Conditions met for round participation");
             if let Err(e) = self.participate().await {
                 tracing::error!("Failed to participate in round: {}", e);
             }
         }
-        
+
         Ok(())
     }
 
