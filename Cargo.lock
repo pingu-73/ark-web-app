@@ -3,6 +3,46 @@
 version = 4
 
 [[package]]
+name = "ARKive-Wallet-backend"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ark-bdk-wallet",
+ "ark-client",
+ "ark-core",
+ "ark-grpc",
+ "async-trait",
+ "axum",
+ "bincode",
+ "bip39",
+ "bitcoin",
+ "chrono",
+ "dotenv",
+ "esplora-client 0.12.0",
+ "futures",
+ "hex",
+ "lazy_static",
+ "once_cell",
+ "parking_lot",
+ "prost 0.11.9",
+ "rand 0.9.1",
+ "reqwest 0.11.27",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower 0.5.2",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -147,46 +187,6 @@ dependencies = [
  "rand 0.9.1",
  "secp256k1-sys 0.11.0",
  "serde",
-]
-
-[[package]]
-name = "ark-web-backend"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ark-bdk-wallet",
- "ark-client",
- "ark-core",
- "ark-grpc",
- "async-trait",
- "axum",
- "bincode",
- "bip39",
- "bitcoin",
- "chrono",
- "dotenv",
- "esplora-client 0.12.0",
- "futures",
- "hex",
- "lazy_static",
- "once_cell",
- "parking_lot",
- "prost 0.11.9",
- "rand 0.9.1",
- "reqwest 0.11.27",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tonic",
- "tower 0.5.2",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
