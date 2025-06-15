@@ -33,36 +33,30 @@ impl UtxoManager {
         Self { blockchain }
     }
 
-    pub async fn get_spendable_utxos(&self) -> Result<Vec<SpendableUtxo>> {
-        let address_str = crate::services::wallet::get_onchain_address().await?;
-        let address = bitcoin::Address::from_str(&address_str)?.assume_checked();
+    pub async fn get_spendable_utxos_for_address(&self, address: &Address) -> Result<Vec<SpendableUtxo>> {
+        tracing::info!("Looking for UTXOs at address: {}", address);
 
-        tracing::info!("Looking for UTXOs at regular Bitcoin address: {}", address);
-
-        // find UTXOs for this address
-        let explorer_utxos = self
-            .blockchain
-            .find_outpoints(&address)
-            .await
+        let explorer_utxos = self.blockchain.find_outpoints(address).await
             .map_err(|e| anyhow!("Failed to find outpoints: {}", e))?;
 
-        // filter for unspent UTXOs and convert to SpendableUtxo
         let spendable_utxos: Vec<SpendableUtxo> = explorer_utxos
             .into_iter()
             .filter(|utxo| !utxo.is_spent)
             .map(|utxo| SpendableUtxo::from((utxo, address.clone())))
             .collect();
 
-        tracing::info!(
-            "Found {} spendable UTXOs totaling {} sats",
+        tracing::info!("Found {} spendable UTXOs totaling {} sats", 
             spendable_utxos.len(),
-            spendable_utxos
-                .iter()
-                .map(|u| u.amount.to_sat())
-                .sum::<u64>()
+            spendable_utxos.iter().map(|u| u.amount.to_sat()).sum::<u64>()
         );
-
+        
         Ok(spendable_utxos)
+    }
+
+    pub async fn get_spendable_utxos(&self) -> Result<Vec<SpendableUtxo>> {
+        let address_str = crate::services::wallet::get_onchain_address().await?;
+        let address = bitcoin::Address::from_str(&address_str)?.assume_checked();
+        self.get_spendable_utxos_for_address(&address).await
     }
 
     pub async fn get_total_balance(&self) -> Result<Amount> {

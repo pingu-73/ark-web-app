@@ -44,6 +44,100 @@ impl TransactionBuilder {
         Ok(txid)
     }
 
+    pub async fn build_and_broadcast_for_wallet(
+        &self,
+        available_utxos: Vec<SpendableUtxo>,
+        to_address: Address,
+        amount: Amount,
+        fee_rate: FeeRate,
+        wallet_keypair: &bitcoin::key::Keypair,
+        wallet_network: bitcoin::Network,
+    ) -> Result<Txid> {
+        let (tx, _change_amount) = self.build_transaction_for_wallet(
+            available_utxos,
+            to_address,
+            amount,
+            fee_rate,
+            wallet_keypair,
+            wallet_network,
+        ).await?;
+
+        self.blockchain.broadcast(&tx).await
+            .map_err(|e| anyhow!("Failed to broadcast transaction: {}", e))?;
+
+        let txid = tx.compute_txid();
+        tracing::info!("Successfully broadcast transaction: {}", txid);
+
+        Ok(txid)
+    }
+
+    async fn build_transaction_for_wallet(
+        &self,
+        available_utxos: Vec<SpendableUtxo>,
+        to_address: Address,
+        amount: Amount,
+        fee_rate: FeeRate,
+        wallet_keypair: &bitcoin::key::Keypair,
+        wallet_network: bitcoin::Network,
+    ) -> Result<(Transaction, Amount)> {
+        let (selected_utxos, fee, change_amount) = self.calculate_transaction_details(
+            available_utxos,
+            to_address.clone(),
+            amount,
+            fee_rate,
+        ).await?;
+
+        // wallet-specific change address
+        let change_address = self.get_change_address_for_wallet(wallet_keypair, wallet_network)?;
+
+        let inputs: Vec<TxIn> = selected_utxos
+            .iter()
+            .map(|utxo| TxIn {
+                previous_output: utxo.outpoint,
+                script_sig: ScriptBuf::new(),
+                sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            })
+            .collect();
+
+        let mut outputs = vec![TxOut {
+            value: amount,
+            script_pubkey: to_address.script_pubkey(),
+        }];
+
+        if change_amount > Amount::ZERO {
+            outputs.push(TxOut {
+                value: change_amount,
+                script_pubkey: change_address.script_pubkey(),
+            });
+        }
+
+        let mut tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: inputs,
+            output: outputs,
+        };
+
+        // wallet-specific keypair for signing
+        self.sign_transaction(&mut tx, &selected_utxos, wallet_keypair).await?;
+
+        Ok((tx, change_amount))
+    }
+
+    fn get_change_address_for_wallet(
+        &self, 
+        keypair: &bitcoin::key::Keypair, 
+        network: bitcoin::Network
+    ) -> Result<Address> {
+        let pubkey = keypair.public_key();
+        let pubkey_bytes = pubkey.serialize();
+        let wpkh = bitcoin::key::CompressedPublicKey::from_slice(&pubkey_bytes)
+            .map_err(|e| anyhow!("Failed to create WPKH: {}", e))?;
+        let address = bitcoin::Address::p2wpkh(&wpkh, network);
+        Ok(address)
+    }
+
     pub async fn estimate_fee(
         &self,
         available_utxos: Vec<SpendableUtxo>,

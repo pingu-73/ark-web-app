@@ -29,6 +29,39 @@ impl OnChainPaymentService {
         }
     }
 
+    pub async fn send_payment_for_wallet(
+        &self,
+        wallet_address: Address,
+        to_address: Address,
+        amount: Amount,
+        fee_rate: Option<bitcoin::FeeRate>,
+        wallet_keypair: &bitcoin::key::Keypair,
+        wallet_network: bitcoin::Network,
+    ) -> Result<Txid> {
+        // 1. get available UTXOs
+        let utxos = self.utxo_manager.get_spendable_utxos_for_address(&wallet_address).await?;
+        
+        // 2. estimate fee if not provided
+        let fee_rate = match fee_rate {
+            Some(rate) => rate,
+            None => self.fee_estimator.estimate_fee_rate().await?,
+        };
+
+        // 3. build and broadcast using wallet-specific keypair
+        let txid = self.transaction_builder
+            .build_and_broadcast_for_wallet(
+                utxos, 
+                to_address, 
+                amount, 
+                fee_rate,
+                wallet_keypair,
+                wallet_network,
+            )
+            .await?;
+
+        Ok(txid)
+    }
+
     pub async fn send_payment(
         &self,
         to_address: Address,

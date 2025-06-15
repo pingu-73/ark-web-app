@@ -90,7 +90,8 @@ impl WalletInstance {
 
     /// Get on-chain balance for this wallet
     pub async fn get_onchain_balance(&self) -> Result<u64> {
-        let address = self.grpc_client.get_onchain_address().await?;
+        let address_str = self.get_onchain_address()?;
+        let address = bitcoin::Address::from_str(&address_str)?.assume_checked();
 
         let esplora_url =
             std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
@@ -98,10 +99,8 @@ impl WalletInstance {
             &esplora_url,
         )?);
 
-        let bitcoin_address = bitcoin::Address::from_str(&address)?.assume_checked();
-
         let utxos = blockchain
-            .find_outpoints(&bitcoin_address)
+            .find_outpoints(&address)
             .await
             .map_err(|e| anyhow!("Failed to find UTXOs: {}", e))?;
 
@@ -122,32 +121,43 @@ impl WalletInstance {
         priority: String,
     ) -> Result<String> {
         let bitcoin_address = bitcoin::Address::from_str(&address)?.assume_checked();
-
+    
         let esplora_url =
             std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
         let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(
             &esplora_url,
         )?);
-
+    
         let payment_service = crate::services::onchain::OnChainPaymentService::new(blockchain);
-
+    
         let fee_priority = match priority.as_str() {
             "fastest" => FeePriority::Fastest,
             "fast" => FeePriority::Fast,
             "slow" => FeePriority::Slow,
             _ => FeePriority::Normal,
         };
-
+    
         let fee_rate = payment_service
             .fee_estimator
             .estimate_fee_for_priority(fee_priority)
             .await?;
-
+    
         let amount = bitcoin::Amount::from_sat(amount);
+        
+        // wallet-specific method
+        let wallet_address = bitcoin::Address::from_str(&self.get_onchain_address()?)?.assume_checked();
+        
         let txid = payment_service
-            .send_payment(bitcoin_address, amount, Some(fee_rate))
+            .send_payment_for_wallet(
+                wallet_address,
+                bitcoin_address,
+                amount,
+                Some(fee_rate),
+                &self.keypair,  // wallet's keypair
+                self.network,   // wallet's network
+            )
             .await?;
-
+    
         Ok(txid.to_string())
     }
 
