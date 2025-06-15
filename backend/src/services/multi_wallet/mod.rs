@@ -121,43 +121,44 @@ impl WalletInstance {
         priority: String,
     ) -> Result<String> {
         let bitcoin_address = bitcoin::Address::from_str(&address)?.assume_checked();
-    
+
         let esplora_url =
             std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
         let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(
             &esplora_url,
         )?);
-    
+
         let payment_service = crate::services::onchain::OnChainPaymentService::new(blockchain);
-    
+
         let fee_priority = match priority.as_str() {
             "fastest" => FeePriority::Fastest,
             "fast" => FeePriority::Fast,
             "slow" => FeePriority::Slow,
             _ => FeePriority::Normal,
         };
-    
+
         let fee_rate = payment_service
             .fee_estimator
             .estimate_fee_for_priority(fee_priority)
             .await?;
-    
+
         let amount = bitcoin::Amount::from_sat(amount);
-        
+
         // wallet-specific method
-        let wallet_address = bitcoin::Address::from_str(&self.get_onchain_address()?)?.assume_checked();
-        
+        let wallet_address =
+            bitcoin::Address::from_str(&self.get_onchain_address()?)?.assume_checked();
+
         let txid = payment_service
             .send_payment_for_wallet(
                 wallet_address,
                 bitcoin_address,
                 amount,
                 Some(fee_rate),
-                &self.keypair,  // wallet's keypair
-                self.network,   // wallet's network
+                &self.keypair, // wallet's keypair
+                self.network,  // wallet's network
             )
             .await?;
-    
+
         Ok(txid.to_string())
     }
 

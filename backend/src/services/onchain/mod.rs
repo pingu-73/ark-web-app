@@ -39,8 +39,11 @@ impl OnChainPaymentService {
         wallet_network: bitcoin::Network,
     ) -> Result<Txid> {
         // 1. get available UTXOs
-        let utxos = self.utxo_manager.get_spendable_utxos_for_address(&wallet_address).await?;
-        
+        let utxos = self
+            .utxo_manager
+            .get_spendable_utxos_for_address(&wallet_address)
+            .await?;
+
         // 2. estimate fee if not provided
         let fee_rate = match fee_rate {
             Some(rate) => rate,
@@ -48,11 +51,12 @@ impl OnChainPaymentService {
         };
 
         // 3. build and broadcast using wallet-specific keypair
-        let txid = self.transaction_builder
+        let txid = self
+            .transaction_builder
             .build_and_broadcast_for_wallet(
-                utxos, 
-                to_address, 
-                amount, 
+                utxos,
+                to_address,
+                amount,
                 fee_rate,
                 wallet_keypair,
                 wallet_network,

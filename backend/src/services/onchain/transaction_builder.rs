@@ -53,16 +53,20 @@ impl TransactionBuilder {
         wallet_keypair: &bitcoin::key::Keypair,
         wallet_network: bitcoin::Network,
     ) -> Result<Txid> {
-        let (tx, _change_amount) = self.build_transaction_for_wallet(
-            available_utxos,
-            to_address,
-            amount,
-            fee_rate,
-            wallet_keypair,
-            wallet_network,
-        ).await?;
+        let (tx, _change_amount) = self
+            .build_transaction_for_wallet(
+                available_utxos,
+                to_address,
+                amount,
+                fee_rate,
+                wallet_keypair,
+                wallet_network,
+            )
+            .await?;
 
-        self.blockchain.broadcast(&tx).await
+        self.blockchain
+            .broadcast(&tx)
+            .await
             .map_err(|e| anyhow!("Failed to broadcast transaction: {}", e))?;
 
         let txid = tx.compute_txid();
@@ -80,12 +84,9 @@ impl TransactionBuilder {
         wallet_keypair: &bitcoin::key::Keypair,
         wallet_network: bitcoin::Network,
     ) -> Result<(Transaction, Amount)> {
-        let (selected_utxos, fee, change_amount) = self.calculate_transaction_details(
-            available_utxos,
-            to_address.clone(),
-            amount,
-            fee_rate,
-        ).await?;
+        let (selected_utxos, fee, change_amount) = self
+            .calculate_transaction_details(available_utxos, to_address.clone(), amount, fee_rate)
+            .await?;
 
         // wallet-specific change address
         let change_address = self.get_change_address_for_wallet(wallet_keypair, wallet_network)?;
@@ -120,15 +121,16 @@ impl TransactionBuilder {
         };
 
         // wallet-specific keypair for signing
-        self.sign_transaction(&mut tx, &selected_utxos, wallet_keypair).await?;
+        self.sign_transaction(&mut tx, &selected_utxos, wallet_keypair)
+            .await?;
 
         Ok((tx, change_amount))
     }
 
     fn get_change_address_for_wallet(
-        &self, 
-        keypair: &bitcoin::key::Keypair, 
-        network: bitcoin::Network
+        &self,
+        keypair: &bitcoin::key::Keypair,
+        network: bitcoin::Network,
     ) -> Result<Address> {
         let pubkey = keypair.public_key();
         let pubkey_bytes = pubkey.serialize();

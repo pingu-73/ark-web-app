@@ -33,10 +33,16 @@ impl UtxoManager {
         Self { blockchain }
     }
 
-    pub async fn get_spendable_utxos_for_address(&self, address: &Address) -> Result<Vec<SpendableUtxo>> {
+    pub async fn get_spendable_utxos_for_address(
+        &self,
+        address: &Address,
+    ) -> Result<Vec<SpendableUtxo>> {
         tracing::info!("Looking for UTXOs at address: {}", address);
 
-        let explorer_utxos = self.blockchain.find_outpoints(address).await
+        let explorer_utxos = self
+            .blockchain
+            .find_outpoints(address)
+            .await
             .map_err(|e| anyhow!("Failed to find outpoints: {}", e))?;
 
         let spendable_utxos: Vec<SpendableUtxo> = explorer_utxos
@@ -45,11 +51,15 @@ impl UtxoManager {
             .map(|utxo| SpendableUtxo::from((utxo, address.clone())))
             .collect();
 
-        tracing::info!("Found {} spendable UTXOs totaling {} sats", 
+        tracing::info!(
+            "Found {} spendable UTXOs totaling {} sats",
             spendable_utxos.len(),
-            spendable_utxos.iter().map(|u| u.amount.to_sat()).sum::<u64>()
+            spendable_utxos
+                .iter()
+                .map(|u| u.amount.to_sat())
+                .sum::<u64>()
         );
-        
+
         Ok(spendable_utxos)
     }
 
