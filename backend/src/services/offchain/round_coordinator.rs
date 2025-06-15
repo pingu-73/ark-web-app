@@ -17,6 +17,8 @@ impl RoundCoordinator {
     }
 
     /// Participate in round
+    /// [Urgent TODO!!!]: `get_boarding_ouput()` is not impl in ark-client: https://github.com/arkade-os/rust-sdk/blob/5099ff004bfbc317b5c6b1185b28ee026fb39dd2/ark-client/src/lib.rs#L137
+    /// so can't send funds from boarding addr to ark addr.
     pub async fn participate(&self) -> Result<Option<String>> {
         tracing::info!("Checking round participation requirements");
 

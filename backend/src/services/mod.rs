@@ -177,11 +177,7 @@ impl AppState {
     }
 }
 
-// initialize global state
-// lazy_static::lazy_static! {
-//     pub static ref APP_STATE: AppState = AppState::new().expect("Failed to initialize app state");
-// }
-// Global state using OnceCell
+// Global state
 static APP_STATE_CELL: OnceCell<AppState> = OnceCell::const_new();
 
 // Helper function to get APP_STATE

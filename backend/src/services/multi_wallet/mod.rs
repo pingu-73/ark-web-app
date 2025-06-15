@@ -176,13 +176,13 @@ impl WalletInstance {
         fee_estimator.get_fee_estimates().await
     }
 
-    /// Estimate on-chain transaction fee
     pub async fn estimate_onchain_fee(
         &self,
         address: String,
         amount: u64,
     ) -> Result<serde_json::Value> {
         let bitcoin_address = bitcoin::Address::from_str(&address)?.assume_checked();
+        let amount = bitcoin::Amount::from_sat(amount);
 
         let esplora_url =
             std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
@@ -191,43 +191,171 @@ impl WalletInstance {
         )?);
 
         let payment_service = crate::services::onchain::OnChainPaymentService::new(blockchain);
-        let amount = bitcoin::Amount::from_sat(amount);
+
+        // wallet-specific UTXOs
+        let wallet_address =
+            bitcoin::Address::from_str(&self.get_onchain_address()?)?.assume_checked();
+        let utxos = payment_service
+            .utxo_manager
+            .get_spendable_utxos_for_address(&wallet_address)
+            .await?;
+
+        if utxos.is_empty() {
+            return Err(anyhow!("No UTXOs available for this wallet"));
+        }
+
+        let total_available: bitcoin::Amount = utxos.iter().map(|u| u.amount).sum();
+
+        if total_available < amount {
+            return Err(anyhow!(
+                "Insufficient funds: need {} BTC, have {} BTC",
+                amount.to_btc(),
+                total_available.to_btc()
+            ));
+        }
 
         let fee = payment_service
-            .estimate_fee(bitcoin_address, amount)
+            .transaction_builder
+            .estimate_fee(
+                utxos,
+                bitcoin_address,
+                amount,
+                bitcoin::FeeRate::from_sat_per_vb(2).unwrap(),
+            )
             .await?;
 
         Ok(serde_json::json!({
             "estimated_fee": fee.to_sat(),
             "amount": amount.to_sat(),
             "total": (amount + fee).to_sat(),
+            "available_balance": total_available.to_sat(),
         }))
     }
 
-    /// Get transaction history
-    pub async fn get_transaction_history(&self) -> Result<Vec<serde_json::Value>> {
-        // Get Ark transactions
-        let ark_transactions = match self.grpc_client.get_transaction_history().await {
-            Ok(txs) => txs,
-            Err(e) => {
-                tracing::warn!("Failed to get Ark transactions: {}", e);
-                vec![]
-            }
-        };
+    /// Estimate on-chain transaction fee with priority
+    pub async fn estimate_onchain_fee_with_priority(
+        &self,
+        address: String,
+        amount: u64,
+        priority: Option<String>,
+    ) -> Result<serde_json::Value> {
+        let bitcoin_address = bitcoin::Address::from_str(&address)?.assume_checked();
+        let amount = bitcoin::Amount::from_sat(amount);
 
-        let mut all_transactions = Vec::new();
+        let esplora_url =
+            std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+        let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(
+            &esplora_url,
+        )?);
 
-        for (txid, amount, timestamp, type_name, is_settled) in ark_transactions {
-            all_transactions.push(serde_json::json!({
-                "txid": txid,
-                "amount": amount,
-                "timestamp": timestamp,
-                "type": type_name,
-                "is_settled": is_settled,
-            }));
+        let payment_service = crate::services::onchain::OnChainPaymentService::new(blockchain);
+
+        // wallet-specific UTXOs
+        let wallet_address =
+            bitcoin::Address::from_str(&self.get_onchain_address()?)?.assume_checked();
+        let utxos = payment_service
+            .utxo_manager
+            .get_spendable_utxos_for_address(&wallet_address)
+            .await?;
+
+        if utxos.is_empty() {
+            return Err(anyhow!("No UTXOs available for this wallet"));
         }
 
-        // Sort by timestamp
+        let total_available: bitcoin::Amount = utxos.iter().map(|u| u.amount).sum();
+
+        if total_available < amount {
+            return Err(anyhow!(
+                "Insufficient funds: need {} BTC, have {} BTC",
+                amount.to_btc(),
+                total_available.to_btc()
+            ));
+        }
+
+        // fee rate based on priority
+        let fee_priority = priority.unwrap_or_else(|| "normal".to_string());
+        let priority_enum =
+            crate::services::onchain::fee_estimator::FeePriority::from(fee_priority.clone());
+
+        let fee_rate = payment_service
+            .fee_estimator
+            .estimate_fee_for_priority(priority_enum)
+            .await
+            .unwrap_or_else(|_| bitcoin::FeeRate::from_sat_per_vb(2).unwrap());
+
+        let fee = payment_service
+            .transaction_builder
+            .estimate_fee(utxos, bitcoin_address, amount, fee_rate)
+            .await?;
+
+        Ok(serde_json::json!({
+            "estimated_fee": fee.to_sat(),
+            "amount": amount.to_sat(),
+            "total": (amount + fee).to_sat(),
+            "available_balance": total_available.to_sat(),
+            "priority": fee_priority,
+            "fee_rate_sat_per_vb": fee_rate.to_sat_per_vb_ceil(),
+        }))
+    }
+
+    pub async fn get_transaction_history(&self) -> Result<Vec<serde_json::Value>> {
+        let mut all_transactions = Vec::new();
+
+        // on-chain tx for this wallet's address
+        let wallet_address = self.get_onchain_address()?;
+        let address = bitcoin::Address::from_str(&wallet_address)?.assume_checked();
+
+        let esplora_url =
+            std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+        let blockchain = Arc::new(crate::services::ark_grpc::EsploraBlockchain::new(
+            &esplora_url,
+        )?);
+
+        // Onchain tx
+        match self.get_onchain_transactions(&blockchain, &address).await {
+            Ok(onchain_txs) => {
+                for (txid, amount, timestamp) in onchain_txs {
+                    all_transactions.push(serde_json::json!({
+                        "txid": txid,
+                        "amount": amount,
+                        "timestamp": timestamp,
+                        "type": "OnChain",
+                        "is_settled": true,
+                    }));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to get on-chain transactions for wallet {}: {}",
+                    self.wallet_id,
+                    e
+                );
+            }
+        }
+
+        // Ark tx
+        match self.grpc_client.get_transaction_history().await {
+            Ok(ark_txs) => {
+                for (txid, amount, timestamp, type_name, is_settled) in ark_txs {
+                    all_transactions.push(serde_json::json!({
+                        "txid": txid,
+                        "amount": amount,
+                        "timestamp": timestamp,
+                        "type": type_name,
+                        "is_settled": is_settled,
+                    }));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to get Ark transactions for wallet {}: {}",
+                    self.wallet_id,
+                    e
+                );
+            }
+        }
+
+        // sort by timestamp (newest first)
         all_transactions.sort_by(|a, b| {
             let ts_a = a.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
             let ts_b = b.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -235,6 +363,94 @@ impl WalletInstance {
         });
 
         Ok(all_transactions)
+    }
+
+    async fn get_onchain_transactions(
+        &self,
+        blockchain: &Arc<crate::services::ark_grpc::EsploraBlockchain>,
+        address: &bitcoin::Address,
+    ) -> Result<Vec<(String, i64, i64)>> {
+        use ark_client::Blockchain;
+
+        let explorer_utxos = blockchain
+            .find_outpoints(address)
+            .await
+            .map_err(|e| anyhow!("Failed to find outpoints: {}", e))?;
+
+        let mut transactions = std::collections::HashMap::new();
+
+        for utxo in explorer_utxos {
+            let txid = utxo.outpoint.txid.to_string();
+            let timestamp =
+                utxo.confirmation_blocktime
+                    .unwrap_or(chrono::Utc::now().timestamp() as u64) as i64;
+
+            // Incoming transaction
+            let entry = transactions
+                .entry(txid.clone())
+                .or_insert((0i64, timestamp));
+            entry.0 += utxo.amount.to_sat() as i64;
+
+            // Check for spending transaction
+            if utxo.is_spent {
+                if let Ok(spend_status) = blockchain
+                    .get_output_status(&utxo.outpoint.txid, utxo.outpoint.vout)
+                    .await
+                {
+                    if let Some(spending_txid) = spend_status.spend_txid {
+                        let spending_txid_str = spending_txid.to_string();
+                        if spending_txid_str != txid {
+                            let spend_entry = transactions
+                                .entry(spending_txid_str)
+                                .or_insert((0i64, chrono::Utc::now().timestamp()));
+                            spend_entry.0 -= utxo.amount.to_sat() as i64;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(transactions
+            .into_iter()
+            .map(|(txid, (amount, timestamp))| (txid, amount, timestamp))
+            .collect())
+    }
+
+    // off-chain functions
+    pub async fn get_exit_recommendations(
+        &self,
+    ) -> Result<Vec<crate::services::offchain::ExitRecommendation>> {
+        // wallet-specific tx history
+        let wallet_transactions = self.get_transaction_history().await?;
+
+        // wallet-specific off-chain service with wallet's tx history
+        self.offchain_service
+            .get_exit_recommendations_with_history(&wallet_transactions)
+            .await
+    }
+
+    pub async fn participate_in_round(&self) -> Result<Option<String>> {
+        self.offchain_service.participate_in_round().await
+    }
+
+    pub async fn send_vtxo(
+        &self,
+        address: ark_core::ArkAddress,
+        amount: bitcoin::Amount,
+    ) -> Result<String> {
+        self.offchain_service.send_vtxo(address, amount).await
+    }
+
+    pub async fn get_offchain_balance(&self) -> Result<(bitcoin::Amount, bitcoin::Amount)> {
+        self.offchain_service.get_balance().await
+    }
+
+    pub async fn get_vtxo_list(&self) -> Result<Vec<crate::services::offchain::VtxoState>> {
+        self.offchain_service.get_vtxo_list().await
+    }
+
+    pub async fn unilateral_exit(&self, vtxo_id: String) -> Result<String> {
+        self.offchain_service.unilateral_exit(vtxo_id).await
     }
 }
 

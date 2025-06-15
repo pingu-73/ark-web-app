@@ -49,6 +49,37 @@ impl ArkOffChainService {
         }
     }
 
+    pub async fn get_exit_recommendations_with_history(
+        &self,
+        wallet_transactions: &[serde_json::Value],
+    ) -> Result<Vec<ExitRecommendation>> {
+        let mut recommendations = Vec::new();
+
+        // Check server responsiveness
+        let server_responsive = self.exit_manager.check_server_responsiveness().await?;
+        if !server_responsive {
+            recommendations.push(ExitRecommendation {
+                vtxo_id: "all".to_string(),
+                reason: ExitReason::ServerUnresponsive,
+                urgency: ExitUrgency::High,
+                estimated_cost: Amount::from_sat(10000),
+            });
+        }
+
+        // Check VTXO expiry
+        let expiry_recommendations = self.exit_manager.check_vtxo_expiry().await?;
+        recommendations.extend(expiry_recommendations);
+
+        // Check for stuck transactions using wallet-specific history
+        let stuck_recommendations = self
+            .exit_manager
+            .check_wallet_transaction_history(wallet_transactions)
+            .await?;
+        recommendations.extend(stuck_recommendations);
+
+        Ok(recommendations)
+    }
+
     pub async fn send_vtxo(&self, address: ArkAddress, amount: Amount) -> Result<String> {
         tracing::info!("Sending {} sats to {}", amount.to_sat(), address);
 

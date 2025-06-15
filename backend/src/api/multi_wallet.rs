@@ -101,9 +101,16 @@ pub async fn get_wallet_balance(
 ) -> impl IntoResponse {
     match state.wallet_manager.get_wallet(&wallet_id).await {
         Ok(wallet) => {
-            let onchain_balance = match crate::services::wallet::get_onchain_balance().await {
+            let onchain_balance = match wallet.get_onchain_balance().await {
                 Ok(balance) => balance,
-                Err(_) => 0,
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to get on-chain balance for wallet {}: {}",
+                        wallet_id,
+                        e
+                    );
+                    0
+                }
             };
 
             let offchain_balance = match wallet.offchain_service.get_balance().await {
@@ -114,11 +121,18 @@ pub async fn get_wallet_balance(
                         "total": (confirmed + pending).to_sat(),
                     })
                 }
-                Err(_) => serde_json::json!({
-                    "confirmed": 0,
-                    "pending": 0,
-                    "total": 0,
-                }),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to get off-chain balance for wallet {}: {}",
+                        wallet_id,
+                        e
+                    );
+                    serde_json::json!({
+                        "confirmed": 0,
+                        "pending": 0,
+                        "total": 0,
+                    })
+                }
             };
 
             (
@@ -362,7 +376,11 @@ pub async fn estimate_transaction_fee(
     match state.wallet_manager.get_wallet(&wallet_id).await {
         Ok(wallet) => {
             match wallet
-                .estimate_onchain_fee(request.address, request.amount)
+                .estimate_onchain_fee_with_priority(
+                    request.address,
+                    request.amount,
+                    request.priority,
+                )
                 .await
             {
                 Ok(fee_info) => (StatusCode::OK, Json(fee_info)).into_response(),
@@ -582,4 +600,5 @@ pub struct SendOnchainRequest {
 pub struct EstimateFeeRequest {
     pub address: String,
     pub amount: u64,
+    pub priority: Option<String>,
 }

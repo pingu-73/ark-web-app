@@ -19,25 +19,6 @@ impl ExitManager {
         // validate VTXO exists and is eligible for exit
         self.validate_exit_eligibility(&vtxo_id).await?;
 
-        // match self.grpc_client.unilateral_exit(vtxo_id.clone()).await {
-        //     Ok(tx) => {
-        //         tracing::info!(
-        //             "Successfully initiated unilateral exit with txid: {}",
-        //             tx.txid
-        //         );
-
-        //         // update app state after exit
-        //         if let Err(e) = self.grpc_client.update_app_state().await {
-        //             tracing::warn!("Failed to update app state after exit: {}", e);
-        //         }
-
-        //         Ok(tx.txid)
-        //     }
-        //     Err(e) => {
-        //         tracing::error!("Failed to perform unilateral exit: {}", e);
-        //         Err(anyhow!("Failed to perform unilateral exit: {}", e))
-        //     }
-        // }
         let client = {
             let client_opt = self.grpc_client.get_ark_client();
             client_opt.as_ref().map(|c| Arc::clone(c))
@@ -146,7 +127,7 @@ impl ExitManager {
     }
 
     /// check if the Ark server is responsive
-    async fn check_server_responsiveness(&self) -> Result<bool> {
+    pub async fn check_server_responsiveness(&self) -> Result<bool> {
         // Try server info with a timeout
         let timeout_duration = std::time::Duration::from_secs(10);
 
@@ -178,7 +159,7 @@ impl ExitManager {
     }
 
     /// check VTXOs approaching expiry
-    async fn check_vtxo_expiry(&self) -> Result<Vec<ExitRecommendation>> {
+    pub async fn check_vtxo_expiry(&self) -> Result<Vec<ExitRecommendation>> {
         let mut recommendations = Vec::new();
         let now = Utc::now().timestamp() as u64;
         let critical_threshold = 1800; // 30 minutes
@@ -236,22 +217,71 @@ impl ExitManager {
     async fn check_stuck_transactions(&self) -> Result<Vec<ExitRecommendation>> {
         let mut recommendations = Vec::new();
 
-        // check app state for pending tx that have been stuck too long
-        let transactions = crate::services::APP_STATE.transactions.lock().await;
+        // [TODO!!] implement a stricter check
+        // simpler check based on VTXO status
+        let client = {
+            let client_opt = self.grpc_client.get_ark_client();
+            client_opt.as_ref().map(|c| Arc::clone(c))
+        };
+
+        if let Some(client) = client {
+            // VTXOs stuck in pending state for too long
+            match client.spendable_vtxos().await {
+                Ok(vtxos) => {
+                    let now = Utc::now().timestamp();
+                    let stuck_threshold = 3600; // 1 hour
+
+                    for (outpoints, _vtxo) in vtxos {
+                        for outpoint in outpoints {
+                            if outpoint.is_pending {
+                                // For pending VTXOs can't determine exact creation time
+                                // but can recommend exit if they've been pending too long
+                                // [TODO!!!] impl stricter checks
+                                recommendations.push(ExitRecommendation {
+                                    vtxo_id: outpoint.outpoint.to_string(),
+                                    reason: ExitReason::StuckTransaction,
+                                    urgency: ExitUrgency::Medium,
+                                    estimated_cost: Amount::from_sat(5000),
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to check for stuck transactions: {}", e);
+                }
+            }
+        }
+
+        Ok(recommendations)
+    }
+
+    pub async fn check_wallet_transaction_history(
+        &self,
+        wallet_transactions: &[serde_json::Value],
+    ) -> Result<Vec<ExitRecommendation>> {
+        let mut recommendations = Vec::new();
         let now = Utc::now().timestamp();
         let stuck_threshold = 3600; // 1 hour
 
-        for tx in transactions.iter() {
-            if tx.is_settled == Some(false)
-                && (now - tx.timestamp) > stuck_threshold
-                && tx.type_name == "Redeem"
-            {
-                recommendations.push(ExitRecommendation {
-                    vtxo_id: tx.txid.clone(),
-                    reason: ExitReason::StuckTransaction,
-                    urgency: ExitUrgency::Medium,
-                    estimated_cost: Amount::from_sat(5000),
-                });
+        for tx in wallet_transactions {
+            if let (Some(is_settled), Some(timestamp), Some(txid), Some(tx_type)) = (
+                tx.get("is_settled").and_then(|v| v.as_bool()),
+                tx.get("timestamp").and_then(|v| v.as_i64()),
+                tx.get("txid").and_then(|v| v.as_str()),
+                tx.get("type").and_then(|v| v.as_str()),
+            ) {
+                if !is_settled
+                    && (now - timestamp) > stuck_threshold
+                    && (tx_type == "Redeem" || tx_type == "Round")
+                {
+                    recommendations.push(ExitRecommendation {
+                        vtxo_id: txid.to_string(),
+                        reason: ExitReason::StuckTransaction,
+                        urgency: ExitUrgency::Medium,
+                        estimated_cost: Amount::from_sat(5000),
+                    });
+                }
             }
         }
 
